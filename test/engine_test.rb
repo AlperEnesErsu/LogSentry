@@ -616,9 +616,9 @@ class EngineTest < Minitest::Test
     refute_nil rule.call(entry(agent: 'Nikto/2.1.6'))
   end
 
-  def test_imza_kurallari_ham_satir_yoksa_yola_bakar
+  def test_imza_kurallari_ham_satir_yoksa_cokmez
     # keep_raw: false ile calisan bir Parser'da entry.raw nil olur.
-    # Kural bu durumda cokmemeli, yola bakmali.
+    # Kural yol ve referer'e baktigi icin bundan etkilenmemeli.
     rule = LogSentry::Rules::Sqli.new(window: 60, threshold: 0)
     no_raw = LogSentry::Entry.new(
       ip: '1.2.3.4', time: T0, http_method: 'GET',
@@ -627,5 +627,57 @@ class EngineTest < Minitest::Test
     )
 
     refute_nil rule.call(no_raw)
+  end
+
+  # --------------------------------------------------------------------------
+  #  KAPSAM AYRIMI: yuk nerede aranir?
+  #     sqli / xss  ->  yol + referer
+  #     scanner     ->  user-agent
+  # --------------------------------------------------------------------------
+
+  def test_referer_icindeki_yuk_yakalanir
+    # Gercek saldirilarda yuk referer basliginda da tasinir.
+    sqli = LogSentry::Rules::Sqli.new(window: 60, threshold: 0)
+    e = LogSentry::Entry.new(
+      ip: '1.2.3.4', time: T0, http_method: 'GET', path: '/', protocol: 'HTTP/1.1',
+      status: 200, bytes: 1,
+      referer: 'http://evil.example/?id=1 union select password from users',
+      user_agent: 'Mozilla/5.0', raw: 'ham satir'
+    )
+
+    refute_nil sqli.call(e), 'referer icindeki SQLi yuku yakalanmali'
+  end
+
+  def test_user_agent_icindeki_yuk_sqli_alarmi_uretmez
+    # BILINCLI KAPSAM KARARI.
+    #
+    # Onceki surumde kurallar ham log satirinin tamamini tariyordu; bu,
+    # user-agent'inda "union select" yazan masum bir istegin CRITICAL
+    # seviye alarm uretmesine yol aciyordu.
+    #
+    # Esigi 0 olan critical bir kuralda yanlis pozitif = gece 3'te bosuna
+    # calan telefon = bir sure sonra gormezden gelinen alarmlar.
+    # User-agent'i degerlendirmek scanner kuralinin isi.
+    sqli = LogSentry::Rules::Sqli.new(window: 60, threshold: 0)
+    xss  = LogSentry::Rules::Xss.new(window: 60, threshold: 0)
+
+    e = LogSentry::Entry.new(
+      ip: '1.2.3.4', time: T0, http_method: 'GET', path: '/', protocol: 'HTTP/1.1',
+      status: 200, bytes: 1, referer: '-',
+      user_agent: 'Mozilla union select <script>alert(1)</script>',
+      raw: '1.2.3.4 - - [...] "GET / HTTP/1.1" 200 1 "-" ' \
+           '"Mozilla union select <script>alert(1)</script>"'
+    )
+
+    assert_nil sqli.call(e), 'user-agent icerigi SQLi alarmi uretmemeli'
+    assert_nil xss.call(e),  'user-agent icerigi XSS alarmi uretmemeli'
+  end
+
+  def test_user_agent_arac_imzasi_tasiyorsa_scanner_yakalar
+    # Kapsam ayriminin diger yarisi: user-agent'a bakan kural scanner.
+    scanner = LogSentry::Rules::Scanner.new(window: 60, threshold: 0)
+
+    refute_nil scanner.call(entry(agent: 'sqlmap/1.8#stable'))
+    assert_nil scanner.call(entry(agent: 'Mozilla/5.0 Chrome/126.0'))
   end
 end

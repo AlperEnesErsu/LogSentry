@@ -252,15 +252,34 @@ module LogSentry
       #     regex taramasindan kurtariyor.
       # ======================================================================
 
-      # Kalip aranacak metin: ham log satiri (yoksa yol).
+      # ----------------------------------------------------------------------
+      #  Kalip aranacak metin: YOL + REFERER
+      # ----------------------------------------------------------------------
+      #  Neden ham satirin tamami degil?
       #
-      # Ham satiri kullaniyoruz cunku saldiri yuku sadece yolda degil,
-      # REFERER ve USER-AGENT alanlarinda da tasinabilir -- gercek hayatta
-      # ikisi de kullanilir. Bunun bedeli: user-agent'inda "union select"
-      # yazan masum bir istek de SQLi alarmi uretir. Bu bilincli bir takas;
-      # boyle bir user-agent zaten kendi basina supheldir.
+      #  Ilk surumde entry.raw taraniyordu -- yani IP, zaman damgasi, durum
+      #  kodu ve USER-AGENT dahil her sey. Bunun olcumlenmis bir yan etkisi
+      #  vardi: user-agent'inda "union select" yazan masum bir istek,
+      #  CRITICAL seviye SQLi alarmi uretiyordu.
+      #
+      #  Esigi 0 olan critical bir kuralda yanlis pozitif, gece 3'te bosuna
+      #  telefon calmasi demektir -- ve Adim 4'te ogrendigimiz gibi SIEM
+      #  projelerini bitiren sey yanlis tespit degil, BILDIRIM YORGUNLUGUDUR.
+      #
+      #  Bu yuzden sorumluluklari ayirdik:
+      #     sqli / xss  ->  YOL ve REFERER  (saldiri yukunun tasindigi yerler)
+      #     scanner     ->  USER-AGENT      (aracin kendini ele verdigi yer)
+      #
+      #  Referer'i tutuyoruz cunku gercek saldirilarda yuk orada da tasinir
+      #  ve referer, user-agent'in aksine "arac imzasi" niyetine kullanilmaz.
+      #
+      #  Bedeli durustce: yalnizca user-agent icinde SQL yuku tasiyan bir
+      #  istek artik bu kurallara gorunmez. O senaryo, tanidik bir arac
+      #  imzasi tasiyorsa scanner kuralina takilir; tasimiyorsa kacar.
+      #  Her esik ve her kapsam bir takastir.
+      # ----------------------------------------------------------------------
       def payload_text(entry)
-        text = entry.raw || entry.path.to_s
+        text = "#{entry.path} #{entry.referer}"
         text.valid_encoding? ? text : text.scrub('?')
       end
 

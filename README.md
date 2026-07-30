@@ -56,6 +56,12 @@ LogSentry log dosyasını canlı izler, her satırı çözümler, kurallardan ge
 üretir. Son üçü **imza** tabanlı: eşik `0` olduğu için ilk eşleşme anında
 alarm düşer — çünkü `union select` içeren tek bir istek bile kazara olmaz.
 
+İmza kurallarında **kapsam ayrımı** var: `sqli` ve `xss` yalnızca **yol ve
+referer** alanlarına bakar, `scanner` ise **user-agent**'a. Sebep: her şeyi
+tarayan bir kural, user-agent'ında `union select` yazan masum bir istekte
+`critical` alarm üretir — ve eşiği `0` olan bir kuralda yanlış pozitif, gece
+3'te boşuna çalan telefon demektir.
+
 `path_scan` diğerlerinden farklı: **hacim değil çeşitlilik** ölçüyor.
 `/admin`'e 50 istek muhtemelen bir yer imi; 5 farklı hassas dizine 1'er istek
 ise keşfetme davranışıdır — bir tarama aracının imzası. Hacim bazlı bir kural
