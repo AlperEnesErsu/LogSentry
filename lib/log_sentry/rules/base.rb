@@ -21,6 +21,7 @@
 #  PathScan         FARKLI hassas dizinler           300 sn     3
 # ============================================================================
 
+require 'cgi'
 require_relative '../alert'
 
 module LogSentry
@@ -226,6 +227,62 @@ module LogSentry
       # Alarma eklenecek kurala ozel bilgiler.
       def details_for(_entry, _measured)
         {}
+      end
+
+      # ======================================================================
+      #  IMZA TABANLI KURALLAR ICIN ORTAK YARDIMCI
+      # ----------------------------------------------------------------------
+      #  Sqli ve Xss gibi kurallar istegin ICERIGINDE kalip arar. Bu, iki
+      #  tuzak barindirir ve ikisi de canli testte ortaya cikti:
+      #
+      #  1) KODLAMA COKMESI  (gercek bir zafiyetti)
+      #     Saldirgan /?x=%FF%FE ister. Log satirinin kendisi gecerli UTF-8'dir
+      #     (yuzde kodlamasi sadece ASCII karakter kullanir), yani Parser'daki
+      #     scrub devreye girmez. Ama CGI.unescape bunu cozunce ortaya GECERSIZ
+      #     baytlar cikar -- ve o metinde regex calistirmak
+      #     "ArgumentError: invalid byte sequence in UTF-8" firlatir.
+      #
+      #     Sonuc: TEK BIR ISTEKLE tum izleme durur. Adim 2'de Parser icin
+      #     duzelttigimiz zafiyetin, kodlama cozuldukten sonra geri gelmis hali.
+      #     Cozum ayni: cozdukten SONRA da temizle.
+      #
+      #  2) GEREKSIZ IS
+      #     Normal trafigin neredeyse tamaminda yuzde kodlamasi yoktur.
+      #     Metinde '%' yoksa cozmeye hic gerek yok -- bu, her satirda iki kat
+      #     regex taramasindan kurtariyor.
+      # ======================================================================
+
+      # Kalip aranacak metin: ham log satiri (yoksa yol).
+      #
+      # Ham satiri kullaniyoruz cunku saldiri yuku sadece yolda degil,
+      # REFERER ve USER-AGENT alanlarinda da tasinabilir -- gercek hayatta
+      # ikisi de kullanilir. Bunun bedeli: user-agent'inda "union select"
+      # yazan masum bir istek de SQLi alarmi uretir. Bu bilincli bir takas;
+      # boyle bir user-agent zaten kendi basina supheldir.
+      def payload_text(entry)
+        text = entry.raw || entry.path.to_s
+        text.valid_encoding? ? text : text.scrub('?')
+      end
+
+      # Yuzde kodlamasi cozulmus hali (gerekmiyorsa nil).
+      def decoded_payload(text)
+        return nil unless text.include?('%')
+
+        decoded = CGI.unescape(text)
+        decoded.valid_encoding? ? decoded : decoded.scrub('?')
+      rescue StandardError
+        # Bozuk kodlama cozulemedi -- kural bu satiri gormemis olsun,
+        # ama PROGRAM DURMASIN.
+        nil
+      end
+
+      # Kalip, istegin ham halinde ya da kodu cozulmus halinde geciyor mu?
+      def payload_matches?(entry, pattern)
+        text = payload_text(entry)
+        return true if pattern.match?(text)
+
+        decoded = decoded_payload(text)
+        !decoded.nil? && pattern.match?(decoded)
       end
 
       private

@@ -1,5 +1,10 @@
 # LogSentry
 
+[![CI](https://github.com/AlperEnesErsu/LogSentry/actions/workflows/ci.yml/badge.svg)](https://github.com/AlperEnesErsu/LogSentry/actions/workflows/ci.yml)
+[![Ruby](https://img.shields.io/badge/ruby-%3E%3D%203.0-CC342D?logo=ruby&logoColor=white)](https://www.ruby-lang.org)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-190%20passing-brightgreen.svg)](#testler)
+
 Web sunucusu loglarını canlı izleyen, saldırı örüntülerini tespit eden ve
 bildirim gönderen bir mini SIEM — **sıfırdan, adım adım, Ruby ile.**
 
@@ -38,11 +43,18 @@ LogSentry log dosyasını canlı izler, her satırı çözümler, kurallardan ge
 
 ### Tespit edilen örüntüler
 
-| Kural | Neyi ölçüyor | Pencere | Eşik |
-|---|---|---|---|
-| `brute_force` | aynı IP'den `401`/`403` yanıtları | 60 sn | 10 |
-| `flood` | aynı IP'den tüm istekler | 1 sn | 100 |
-| `path_scan` | aynı IP'den **farklı** hassas dizin sayısı | 300 sn | 3 |
+| Kural | Neyi ölçüyor | Pencere | Eşik | Önem |
+|---|---|---|---|---|
+| `brute_force` | aynı IP'den `401`/`403` yanıtları | 60 sn | 10 | high |
+| `flood` | aynı IP'den tüm istekler | 1 sn | 100 | high |
+| `path_scan` | aynı IP'den **farklı** hassas dizin sayısı | 300 sn | 3 | medium |
+| `sqli` | SQL enjeksiyonu imzaları (`union select`, `information_schema`…) | 60 sn | 0 | critical |
+| `xss` | XSS / komut enjeksiyonu imzaları (`<script>`, `/etc/passwd`…) | 60 sn | 0 | high |
+| `scanner` | bilinen tarama araçlarının User-Agent'ı (sqlmap, nikto, nmap…) | 60 sn | 0 | medium |
+
+İlk üçü **davranış** tabanlı: tek bir olay değil, olayların birikimi alarm
+üretir. Son üçü **imza** tabanlı: eşik `0` olduğu için ilk eşleşme anında
+alarm düşer — çünkü `union select` içeren tek bir istek bile kazara olmaz.
 
 `path_scan` diğerlerinden farklı: **hacim değil çeşitlilik** ölçüyor.
 `/admin`'e 50 istek muhtemelen bir yer imi; 5 farklı hassas dizine 1'er istek
@@ -99,6 +111,26 @@ ruby bin/logsentry --config config/demo.yml
 
 Uyarılar hem terminale hem `logs/alerts.jsonl`'a düşer, web arayüzündeki canlı
 akışta sayfa yenilenmeden görünür.
+
+---
+
+### Docker ile
+
+Ruby kurmak istemiyorsan:
+
+```bash
+docker compose up --build
+```
+
+Tarayıcıda `http://localhost:4567`. Sahte trafik de isteniyorsa:
+
+```bash
+docker compose --profile demo up --build
+```
+
+Üç servis mimarideki üç process'in birebir karşılığı: `logsentry` (izleyici),
+`logsentry-web` (arayüz), `traffic` (sahte trafik, sadece `demo` profilinde).
+Port `127.0.0.1:4567` olarak bağlanıyor — yani panel dışarıya açılmıyor.
 
 ---
 
@@ -351,18 +383,22 @@ ruby test/web_test.rb
 |---|---|---|
 | `parser_test.rb` | 21 | 64 |
 | `tailer_test.rb` | 15 | 24 (Win, 3 atlama) / 32 (WSL) |
-| `engine_test.rb` | 36 | 211 |
+| `engine_test.rb` | 41 | 229 |
 | `daemon_test.rb` | 29 | 86 |
 | `store_test.rb` | 47 | 136 |
 | `web_test.rb` | 33 | 106 |
-| **Toplam** | **181** | **0 hata** (Windows + WSL Ubuntu 22.04) |
+| **Toplam** | **190** | **0 hata** (Windows + WSL Ubuntu 22.04 + CI: 2 OS × 3 Ruby) |
 
 Yalnızca `minitest` (Ruby ile birlikte gelir). Windows'ta atlanan 3 test, açık
 dosyanın taşınamamasından — `skip` ile atlanıyor, sahte geçmiyor.
 
 Testler kasten **hızlı ve saf**: zaman uydurulmuş (`sleep 61` yok), veritabanı
-`:memory:`, gerçek HTTP isteği ve gerçek daemon yok. 181 test saniyeler içinde
+`:memory:`, gerçek HTTP isteği ve gerçek daemon yok. 190 test saniyeler içinde
 koşuyor.
+
+Her push'ta GitHub Actions üzerinde **Ubuntu ve Windows × Ruby 3.2 / 3.3 / 3.4**
+matrisinde yeniden koşuyor — yani kod, temiz bir makinede sıfırdan kurulumla da
+çalışıyor.
 
 ---
 

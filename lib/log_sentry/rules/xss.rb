@@ -7,7 +7,6 @@
 #  istekler tespit edildiğinde yüksek önem düzeyinde uyarı üretir.
 # ============================================================================
 
-require 'cgi'
 require_relative 'base'
 
 module LogSentry
@@ -20,20 +19,20 @@ module LogSentry
         /onerror\s*=/i,
         /eval\(/i,
         /document\.cookie/i,
-        /\/etc\/passwd/i,
+        %r{/etc/passwd}i,
         /cmd\.exe/i,
         /;\s*cat\s+/i
       ].freeze
 
+      # Tek gecisde arama icin birlestirilmis kalip (bkz. Sqli).
+      PATTERN = Regexp.union(DEFAULT_PATTERNS).freeze
+
       def initialize(severity: :high, **opts)
         super(severity: severity, **opts)
-        @patterns = DEFAULT_PATTERNS
       end
 
       def interested?(entry)
-        text = "#{entry.path} #{entry.raw}"
-        decoded = CGI.unescape(text) rescue text
-        @patterns.any? { |pattern| pattern.match?(text) || pattern.match?(decoded) }
+        payload_matches?(entry, PATTERN)
       end
 
       def value_for(entry)

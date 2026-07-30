@@ -1,31 +1,92 @@
-version: '3.8'
+# ============================================================================
+#  LogSentry -- konteyner kurulumu
+# ----------------------------------------------------------------------------
+#  Mimarideki uc process'in birebir karsiligi (bkz. ARCHITECTURE.md):
+#
+#     logsentry      -> access.log'u izler, kural isletir, uyari uretir
+#     logsentry-web  -> tarayiciya hizmet eder (:4567)
+#     traffic        -> gelistirme icin sahte trafik uretir
+#
+#  Neden ayri konteynerler? Web arayuzu cokerse IZLEME DURMAMALI. Guvenlik
+#  izlemesini bir web sunucusunun kaderine baglamak kotu muhendisliktir.
+#
+#  Calistirmak icin:
+#     docker compose up --build
+#     tarayici: http://localhost:4567
+#
+#  NOT: `version:` alani Compose v2'de kullanimdan kalkti; yazilirsa
+#  "obsolete" uyarisi verir. O yuzden yok.
+# ============================================================================
 
 services:
+  # --- Izleyici servis ------------------------------------------------------
   logsentry:
     build: .
+    # --from-begin: konteyner ilk kalktiginda mevcut logun tamamini isle.
+    # (Uretimde dikkatli kullan -- Tailer'in checkpoint dosyasi zaten kaldigi
+    #  yerden devam etmeyi sagliyor.)
     command: bin/logsentry --from-begin
     volumes:
       - ./logs:/app/logs
-      - ./config:/app/config
       - ./db:/app/db
+      - ./archive:/app/archive
+      # Yapilandirma SALT OKUNUR baglaniyor: konteynerin kendi kurallarini
+      # degistirebilmesi icin hicbir sebep yok.
+      - ./config:/app/config:ro
+    environment:
+      # Webhook adresi ORTAM DEGISKENINDEN gelir, dosyadan degil.
+      # Kullanmak icin: export LOGSENTRY_WEBHOOK_URL=https://...
+      - LOGSENTRY_WEBHOOK_URL=${LOGSENTRY_WEBHOOK_URL:-}
+      - LOGSENTRY_TELEGRAM_CHAT_ID=${LOGSENTRY_TELEGRAM_CHAT_ID:-}
     restart: unless-stopped
 
+  # --- Web arayuzu ----------------------------------------------------------
   logsentry-web:
     build: .
+    # DIKKAT: --bind 0.0.0.0 burada ZORUNLU.
+    # Konteyner icinde 127.0.0.1'e baglanan bir servise disaridan erisilemez;
+    # port yonlendirmesi calismaz.
+    #
+    # Bunun bedeli: arayuz artik konteyner icinde localhost ile sinirli DEGIL.
+    # Guvenligi asagidaki `ports` satiri sagliyor -- "127.0.0.1:4567:4567"
+    # yazarak portu yalnizca bu makineye aciyoruz. Sunucuya kurarsan Nginx +
+    # TLS + kimlik dogrulama arkasina al.
     command: bin/logsentry-web --bind 0.0.0.0 --port 4567
     ports:
-      - "4567:4567"
+      - "127.0.0.1:4567:4567"
     volumes:
       - ./logs:/app/logs
-      - ./config:/app/config
       - ./db:/app/db
+      - ./archive:/app/archive
+      - ./config:/app/config:ro
     depends_on:
       - logsentry
     restart: unless-stopped
+    # Saglik kontrolu YALNIZCA bu serviste: diger iki servis HTTP konusmuyor.
+    # (Imaja gomseydik hepsi devralir ve digerleri hep "unhealthy" gorunurdu.)
+    #
+    # "Process ayakta mi" diye bakmak yetmez -- ayakta ama yanit vermeyen bir
+    # servis en sinsi arizadir. O yuzden gercek bir istek atiyoruz.
+    healthcheck:
+      test: ["CMD", "ruby", "-e", "require 'net/http'; exit(Net::HTTP.get_response(URI('http://127.0.0.1:4567/health')).is_a?(Net::HTTPSuccess) ? 0 : 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
 
-  log-generator:
+  # --- Sahte trafik (yalnizca gelistirme) -----------------------------------
+  #  `profiles` sayesinde varsayilan `docker compose up` ile BASLAMAZ.
+  #  Baslatmak icin:  docker compose --profile demo up
+  #
+  #  Onceki surumde burada `tools/log_generator.rb --rate 10` yaziyordu.
+  #  O betik konumsal arguman aliyor (satir sayisi, dosya) ve "--rate"
+  #  degerini 0 satir olarak yorumluyordu: hicbir sey yazmadan hemen cikiyor,
+  #  `restart: unless-stopped` ile de sonsuz yeniden baslatma dongusune
+  #  giriyordu. Surekli akis uretmek live_writer.rb'nin isi.
+  traffic:
     build: .
-    command: ruby tools/log_generator.rb --rate 10
+    profiles: [demo]
+    command: ruby tools/live_writer.rb --attack brute --rps 10
     volumes:
       - ./logs:/app/logs
     restart: unless-stopped

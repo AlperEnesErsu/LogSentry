@@ -1,0 +1,32 @@
+# ============================================================================
+#  Docker build baglaminın disinda tutulacaklar
+# ----------------------------------------------------------------------------
+#  Bu dosya olmadan `docker build` tum klasoru (git gecmisi, uretilen
+#  veritabani, 2 MB'lik demo GIF'i dahil) daemon'a gonderir. Hem build
+#  yavaslar hem de imaj gereksiz sisebilir.
+# ============================================================================
+
+.git/
+.github/
+.gitignore
+.gitattributes
+
+# Uretilen veri -- konteynerde volume olarak baglaniyor
+logs/*
+db/*
+archive/*
+!logs/.gitkeep
+!db/.gitkeep
+!archive/.gitkeep
+
+# Belgeler ve gorseller imaja gerek yok
+docs/
+reports/
+*.gif
+
+# Yerel gelistirme artiklari
+scratch/
+tmp/
+Gemfile.lock
+.bundle/
+vendor/

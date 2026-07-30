@@ -7,7 +7,6 @@
 #  örünntüsü içeren istekler geldiğinde kritik düzeyde uyarı üretir.
 # ============================================================================
 
-require 'cgi'
 require_relative 'base'
 
 module LogSentry
@@ -25,15 +24,23 @@ module LogSentry
         /into\s+outfile/i
       ].freeze
 
+      # Dokuz ayri kalibi TEK bir regex'te birlestiriyoruz.
+      #
+      # Neden? Bu kural HER log satirinda calisiyor. Dizi uzerinde donup
+      # 9 kez match? cagirmak, metni 9 kez bastan taramak demektir.
+      # Regexp.union tek gecisde hepsini arar ve her kalibin kendi
+      # bayraklarini (/i) korur.
+      PATTERN = Regexp.union(DEFAULT_PATTERNS).freeze
+
       def initialize(severity: :critical, **opts)
         super(severity: severity, **opts)
-        @patterns = DEFAULT_PATTERNS
       end
 
+      # payload_matches? Base'de: ham satiri ve (gerekiyorsa) yuzde
+      # kodlamasi cozulmus halini tarar; ikisini de kodlama hatalarina
+      # karsi temizler.
       def interested?(entry)
-        text = "#{entry.path} #{entry.raw}"
-        decoded = CGI.unescape(text) rescue text
-        @patterns.any? { |pattern| pattern.match?(text) || pattern.match?(decoded) }
+        payload_matches?(entry, PATTERN)
       end
 
       def value_for(entry)

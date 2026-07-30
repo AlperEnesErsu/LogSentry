@@ -32,6 +32,15 @@ Gem::Specification.new do |spec|
   spec.required_ruby_version = '>= 3.0'
 
   spec.add_dependency 'puma',    '>= 6.0'
+  # rackup: Rack 3 ile birlikte sunucuyu baslatan kod ayri bir gem'e tasindi.
+  # Sinatra'nin `run!` cagrisi bunu arar; yoksa
+  #   "Sinatra could not start, the required gems weren't found"
+  # der ve sunucu HIC ACILMAZ.
+  #
+  # Bu eksigi yerelde fark etmemistik cunku rackup'i elle kurmustuk; CI de
+  # yakalayamazdi cunku web testleri Rack::MockRequest kullaniyor ve gercek
+  # sunucu baslatmiyor. Ancak temiz bir konteynerde ortaya cikti.
+  spec.add_dependency 'rackup',  '>= 2.0'
   spec.add_dependency 'sinatra', '~> 4.0'
   spec.add_dependency 'sqlite3', '>= 2.0'
 

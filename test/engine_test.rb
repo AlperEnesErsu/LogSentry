@@ -547,4 +547,85 @@ class EngineTest < Minitest::Test
 
     assert_operator high.severity_rank, :>, med.severity_rank
   end
+
+  # --------------------------------------------------------------------------
+  #  IMZA TABANLI KURALLAR -- kodlama tuzaklari
+  # --------------------------------------------------------------------------
+
+  def test_yuzde_kodlanmis_gecersiz_bayt_daemonu_oldurmez
+    # GERCEK BIR ZAFIYETIN TESTI.
+    #
+    # Saldirgan  /search?q=%FF%FE  ister. Log satirinin KENDISI gecerli
+    # UTF-8'dir -- yuzde kodlamasi yalnizca ASCII karakter kullanir -- yani
+    # Parser'daki scrub devreye girmez ve kayit sorunsuz gecer.
+    #
+    # Ama Sqli/Xss kurallari kodu COZUNCE ortaya gecersiz baytlar cikar ve
+    # o metinde regex calistirmak ArgumentError firlatir. Hata kuraldan
+    # motora, motordan okuma dongusune yayilir:
+    #     TEK BIR ISTEKLE TUM IZLEME DURUR.
+    #
+    # Adim 2'de Parser icin duzelttigimiz zafiyetin, kodlama cozuldukten
+    # sonra geri gelmis hali.
+    evil = entry(path: '/search?q=%FF%FE')
+
+    %i[sqli xss].each do |name|
+      rule = LogSentry::Engine::RULE_CLASSES[name.to_s].new(window: 60, threshold: 0)
+      rule.call(evil)   # hata firlatirsa test coker ve bizi uyarir
+    end
+
+    # Uctan uca: motor bu satirda hayatta kalmali
+    engine = LogSentry::Engine.new(
+      rules: [
+        LogSentry::Rules::Sqli.new(window: 60, threshold: 0),
+        LogSentry::Rules::Xss.new(window: 60, threshold: 0)
+      ]
+    )
+    engine.process(evil)
+
+    pass
+  end
+
+  def test_yuzde_kodlanmis_saldiri_yuku_yakalanir
+    # Kodlama temizligi, TESPITI bozmamali. Saldirganlar yuku zaten
+    # kodlayarak gonderir; kod cozulmeden bakan bir kural kor kalir.
+    rule = LogSentry::Rules::Xss.new(window: 60, threshold: 0)
+    encoded = entry(path: '/profile?name=%3Cscript%3Ealert(1)%3C%2Fscript%3E')
+
+    refute_nil rule.call(encoded), 'kodlanmis XSS yuku yakalanmali'
+  end
+
+  def test_imza_kurallari_normal_trafikte_alarm_uretmez
+    # Yanlis pozitif kontrolu: en sik goreceğimiz istekler sessiz kalmali.
+    sqli = LogSentry::Rules::Sqli.new(window: 60, threshold: 0)
+    xss  = LogSentry::Rules::Xss.new(window: 60, threshold: 0)
+
+    %w[/ /about /products/42 /api/v1/users?page=2&sort=name
+       /static/css/main.css /images/logo.png?v=3].each do |path|
+      assert_nil sqli.call(entry(path: path)), "yanlis pozitif: #{path}"
+      assert_nil xss.call(entry(path: path)),  "yanlis pozitif: #{path}"
+    end
+  end
+
+  def test_scanner_bos_user_agenti_yok_sayar
+    # "-" nginx'in "user-agent yok" yazma bicimi. Bunu bir arac adi
+    # sanmamaliyiz.
+    rule = LogSentry::Rules::Scanner.new(window: 60, threshold: 0)
+
+    assert_nil rule.call(entry(agent: '-'))
+    assert_nil rule.call(entry(agent: ''))
+    refute_nil rule.call(entry(agent: 'Nikto/2.1.6'))
+  end
+
+  def test_imza_kurallari_ham_satir_yoksa_yola_bakar
+    # keep_raw: false ile calisan bir Parser'da entry.raw nil olur.
+    # Kural bu durumda cokmemeli, yola bakmali.
+    rule = LogSentry::Rules::Sqli.new(window: 60, threshold: 0)
+    no_raw = LogSentry::Entry.new(
+      ip: '1.2.3.4', time: T0, http_method: 'GET',
+      path: '/x?q=union select 1', protocol: 'HTTP/1.1',
+      status: 200, bytes: 1, referer: '-', user_agent: 'curl', raw: nil
+    )
+
+    refute_nil rule.call(no_raw)
+  end
 end
