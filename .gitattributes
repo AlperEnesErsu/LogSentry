@@ -1,0 +1,22 @@
+# ============================================================================
+#  Satir sonu (line ending) normalizasyonu
+# ----------------------------------------------------------------------------
+#  Windows'ta git varsayilan olarak calisma kopyasinda CRLF kullanir. Bu,
+#  metin dosyalari icin zararsizdir AMA bin/ altindaki betikler icin degil:
+#
+#      #!/usr/bin/env ruby\r\n
+#                          ^^ Linux bu satiri "ruby\r" yorumlayicisi diye
+#                             okur ve "bad interpreter" hatasi verir.
+#
+#  Asagidaki satir depoda HER ZAMAN LF saklanmasini garanti eder; Windows'ta
+#  calisirken checkout sirasinda CRLF'e cevrilir, commit sirasinda geri LF
+#  olur. Boylece proje Linux sunucuda da sorunsuz calisir.
+# ============================================================================
+* text=auto eol=lf
+
+# Ikili dosyalar: dokunma
+*.gif  binary
+*.png  binary
+*.jpg  binary
+*.gz   binary
+*.db   binary

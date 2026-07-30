@@ -1,0 +1,153 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# ============================================================================
+#  ADIM 7 -- bin/logsentry-web: web arayuzu sunucusu
+# ----------------------------------------------------------------------------
+#  AYRI BIR PROCESS. Daemon'un icinde degil.
+#
+#  Neden? Cunku web arayuzu cokerse (birisi hatali bir sorgu atar, bellek
+#  siser, bir gem hata verir) IZLEME DURMAMALI. Guvenlik izlemesi sistemin
+#  en kritik parcasi; onu bir web sunucusunun kaderine baglamak kotu
+#  muhendisliktir. Prometheus veri toplar, Grafana gosterir -- ayri
+#  process'lerdir, ayni sebeple.
+#
+#  Iki process birbiriyle DOSYA ve VERITABANI uzerinden konusuyor:
+#     daemon  --yazar-->  db/logsentry.db + logs/alerts.jsonl  <--okur--  web
+#
+#  KULLANIM
+#    bin/logsentry-web                 # http://127.0.0.1:4567
+#    bin/logsentry-web --port 8080
+#    bin/logsentry-web --bind 0.0.0.0  # UYARI VERIR (asagiya bak)
+# ============================================================================
+
+require 'optparse'
+require 'yaml'
+
+lib_path = File.expand_path('../lib', __dir__)
+lib_path = File.expand_path('./lib') unless File.exist?(File.join(lib_path, 'log_sentry.rb'))
+$LOAD_PATH.unshift(lib_path) unless $LOAD_PATH.include?(lib_path)
+
+require 'log_sentry'
+require 'log_sentry/store'
+require 'log_sentry/archiver'
+require 'log_sentry/web/app'
+
+root_dir = File.expand_path('..', __dir__)
+root_dir = Dir.pwd unless File.exist?(File.join(root_dir, 'config', 'logsentry.yml'))
+ROOT = root_dir
+options = { config: File.join(ROOT, 'config', 'logsentry.yml') }
+
+OptionParser.new do |o|
+  o.banner = "LogSentry web v#{LogSentry::VERSION} -- kullanim: bin/logsentry-web [secenekler]"
+  o.on('-c', '--config PATH', 'yapilandirma dosyasi') { |v| options[:config] = File.expand_path(v) }
+  o.on('-b', '--bind ADDR',   'dinlenecek adres')     { |v| options[:bind] = v }
+  o.on('-p', '--port PORT', Integer, 'port')          { |v| options[:port] = v }
+  o.on('--allow-write', 'salt okunurlugu kaldir (ONERILMEZ)') { options[:allow_write] = true }
+  o.on('-h', '--help') do
+    puts o
+    exit 0
+  end
+end.parse!
+
+abort "HATA: yapilandirma yok: #{options[:config]}" unless File.exist?(options[:config])
+config = YAML.load_file(options[:config])
+Dir.chdir(ROOT)   # yapilandirmadaki yollar goreli
+
+web_cfg = config['web'] || {}
+bind    = options[:bind] || web_cfg.fetch('bind', '127.0.0.1')
+port    = options[:port] || web_cfg.fetch('port', 4567)
+
+# ----------------------------------------------------------------------------
+#  DISA ACMA UYARISI
+# ----------------------------------------------------------------------------
+#  Bu panel saldirganin en cok gormek istedigi ekran: hangi IP'sinin
+#  yakalandigini, hangi kuralin hangi esikle calistigini, hatta kanit olarak
+#  ham log satirlarini gosteriyor.
+#
+#  Kimlik dogrulama YOK (kapsam disi). O yuzden localhost disina acmak,
+#  bu bilgiyi herkese acmak demektir. Engellemiyoruz -- kullanicinin karari --
+#  ama sessiz de kalmiyoruz.
+# ----------------------------------------------------------------------------
+unless %w[127.0.0.1 localhost ::1].include?(bind)
+  warn <<~WARN
+
+    !! UYARI: arayuz #{bind} adresine aciliyor.
+    !! Bu panelde kimlik dogrulama YOK ve ham log satirlarini gosteriyor.
+    !! Disa acmak gerekiyorsa Nginx arkasindan, TLS + kimlik dogrulama ile yap.
+
+  WARN
+end
+
+# --- Depolama ---------------------------------------------------------------
+store = nil
+if (storage = config['storage']) && storage['database']
+  if File.exist?(File.expand_path(storage['database']))
+    store = LogSentry::Store.new(path: storage['database'],
+                                 store_all_events: storage.fetch('store_all_events', true))
+  else
+    warn "[uyari] veritabani yok: #{storage['database']}"
+    warn '        once veri uret: bin/logsentry --from-begin --once'
+  end
+end
+
+# --- Arsivci ----------------------------------------------------------------
+archiver = nil
+if (arc = config['archive']) && arc['enabled']
+  archiver = LogSentry::Archiver.new(
+    directory:      arc.fetch('directory', 'archive'),
+    manifest:       arc['manifest'],
+    retention_days: arc.fetch('retention_days', 730)
+  )
+end
+
+# --- Uygulamayi yapilandir --------------------------------------------------
+app = LogSentry::Web::App
+app.set :store,      store
+app.set :archiver,   archiver
+app.set :alert_file, File.expand_path(config.fetch('alert_file', 'logs/alerts.jsonl'))
+app.set :read_only,  !options[:allow_write] && web_cfg.fetch('read_only', true)
+app.set :page_size,  web_cfg.fetch('page_size', 50)
+app.set :bind,       bind
+app.set :port,       port
+
+# Puma: thread'li bir sunucu. SSE icin SART -- her canli akis baglantisi bir
+# thread'i uzun sure mesgul tutar. Tek thread'li bir sunucuda (ornegin
+# WEBrick'in varsayilan kipi) ILK SSE baglantisi tum sunucuyu kilitler ve
+# baska hicbir sayfa acilmaz.
+app.set :server, :puma
+app.set :quiet,  false
+
+# ----------------------------------------------------------------------------
+#  THREAD SAYISI -- SSE yuzunden onemli
+# ----------------------------------------------------------------------------
+#  Puma varsayilan olarak 5 thread ile calisir. Her SSE baglantisi BIR
+#  thread'i uzun sure tutar. Bes sekme acan (ya da hizli hizli sayfalar
+#  arasinda gezinen) bir kullanici tum thread'leri tuketir ve sunucu yanit
+#  veremez hale gelir. Canli video kaydi sirasinda bunu bizzat yasadik.
+#
+#  Iki cozum birlikte uygulaniyor:
+#    1) app.rb icindeki KALP ATISI -> olu baglantilari hizla serbest birakir
+#    2) daha fazla thread          -> es zamanli izleyiciye yer acar
+#
+#  Ikisi birlikte gerekli: sadece thread artirmak sizintiyi geciktirir,
+#  sadece kalp atisi ise es zamanli kullanici sayisini sinirli tutar.
+# ----------------------------------------------------------------------------
+app.set :server_settings, { Threads: '2:16' }
+
+puts '=' * 70
+puts " LogSentry web arayuzu v#{LogSentry::VERSION}"
+puts '=' * 70
+puts " adres      : http://#{bind}:#{port}"
+puts " veritabani : #{store ? store.path : 'YOK -- dashboard calismaz'}"
+puts " arsiv      : #{archiver ? archiver.directory : 'kapali'}"
+puts " uyari akisi: #{app.settings.alert_file}"
+puts " mod        : #{app.settings.read_only ? 'SALT OKUNUR' : 'YAZMAYA ACIK (!)'}"
+puts '=' * 70
+puts ' Ctrl-C ile durdurulur'
+puts
+
+# Kapanirken veritabanini duzgun kapat (WAL checkpoint dahil).
+at_exit { store&.close }
+
+app.run!

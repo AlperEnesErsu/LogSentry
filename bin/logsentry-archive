@@ -1,0 +1,223 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# ============================================================================
+#  ADIM 6d -- bin/logsentry-archive: arsivleme ve bakim gorevi
+# ----------------------------------------------------------------------------
+#  Bu betik daemon'un PARCASI DEGILDIR. Ayri bir process olarak, gunde bir
+#  kez cron ile calisir.
+#
+#  Neden daemon'un icinde degil? Cunku farkli bir is: daemon milisaniyeler
+#  olceginde calisan bir akis isleyicisi; arsivleme gunde bir kez calisan,
+#  dakikalar surebilen bir toplu is (batch job). Ikisini ayni process'e
+#  koymak, arsivleme sirasinda izlemenin gecikmesi demek olurdu.
+#
+#  CRON KURULUMU (her gun 03:15):
+#    15 3 * * * cd /opt/logsentry && bin/logsentry-archive --all >> logs/archive.log 2>&1
+#
+#  KULLANIM
+#    bin/logsentry-archive --verify      # butunluk denetimi
+#    bin/logsentry-archive --stats       # arsiv durumu
+#    bin/logsentry-archive --roll        # canli logu dondur + arsivle
+#    bin/logsentry-archive --archive PATH
+#    bin/logsentry-archive --prune       # saklama suresi gecenleri sil
+#    bin/logsentry-archive --prune-db    # sicak katmani temizle
+#    bin/logsentry-archive --all         # dogrula + dondur + temizle
+#    bin/logsentry-archive --dry-run --prune   # neyin silinecegini goster
+# ============================================================================
+
+require 'optparse'
+require 'yaml'
+
+lib_path = File.expand_path('../lib', __dir__)
+lib_path = File.expand_path('./lib') unless File.exist?(File.join(lib_path, 'log_sentry.rb'))
+$LOAD_PATH.unshift(lib_path) unless $LOAD_PATH.include?(lib_path)
+
+require 'log_sentry/archiver'
+
+root_dir = File.expand_path('..', __dir__)
+root_dir = Dir.pwd unless File.exist?(File.join(root_dir, 'config', 'logsentry.yml'))
+ROOT = root_dir
+
+options = { config: File.join(ROOT, 'config', 'logsentry.yml'), actions: [],
+            dry_run: false }
+
+OptionParser.new do |o|
+  o.banner = 'kullanim: bin/logsentry-archive [secenekler]'
+
+  o.on('-c', '--config PATH', 'yapilandirma dosyasi') { |v| options[:config] = File.expand_path(v) }
+  o.on('--verify',    'butunluk denetimi')          { options[:actions] << :verify }
+  o.on('--stats',     'arsiv durumu')               { options[:actions] << :stats }
+  o.on('--roll',      'canli logu dondur+arsivle')  { options[:actions] << :roll }
+  o.on('--archive PATH', 'belirtilen dosyayi arsivle') do |v|
+    options[:actions] << :archive
+    options[:archive_path] = v
+  end
+  o.on('--prune',     'suresi gecen arsivleri sil') { options[:actions] << :prune }
+  o.on('--prune-db',  'sicak katmani temizle')      { options[:actions] << :prune_db }
+  o.on('--vacuum',    'veritabani dosyasini kucult') { options[:actions] << :vacuum }
+  o.on('--all',       'dogrula + dondur + temizle') { options[:actions] += %i[verify roll prune prune_db] }
+  o.on('-n', '--dry-run', 'hicbir sey silme, sadece goster') { options[:dry_run] = true }
+  o.on('-h', '--help') do
+    puts o
+    exit 0
+  end
+end.parse!
+
+abort "HATA: yapilandirma yok: #{options[:config]}" unless File.exist?(options[:config])
+config = YAML.load_file(options[:config])
+
+Dir.chdir(ROOT)   # goreli yollar yapilandirmadan geldigi icin
+
+archive_cfg = config['archive'] || {}
+unless archive_cfg['enabled']
+  abort 'HATA: arsivleme yapilandirmada kapali (archive.enabled: false)'
+end
+
+archiver = LogSentry::Archiver.new(
+  directory:      archive_cfg.fetch('directory', 'archive'),
+  manifest:       archive_cfg['manifest'],
+  retention_days: archive_cfg.fetch('retention_days', 730),
+  compress:       archive_cfg.fetch('compress', true),
+  seal:           archive_cfg.fetch('seal', true)
+)
+
+options[:actions] << :stats if options[:actions].empty?
+exit_code = 0
+
+options[:actions].uniq.each do |action|
+  case action
+
+  # ------------------------------------------------------------------------
+  when :verify
+    puts '=== BUTUNLUK DENETIMI ==='
+    result = archiver.verify
+
+    if result[:count].zero?
+      puts 'arsiv bos -- dogrulanacak kayit yok'
+    else
+      result[:entries].each do |e|
+        mark = e[:ok] ? 'OK  ' : 'HATA'
+        line = format('  [%s] %-44s', mark, e[:file])
+        line += "  <-- #{e[:reason]}" if e[:reason]
+        puts line
+      end
+      puts
+      puts "kayit sayisi : #{result[:count]}"
+      puts "zincir basi  : #{result[:head]}"
+      puts "SONUC        : #{result[:ok] ? 'BUTUNLUK SAGLAM' : 'BUTUNLUK BOZULMUS'}"
+    end
+
+    unless result[:ok]
+      # Butunluk uyusmazligi KENDI BASINA BIR GUVENLIK OLAYIDIR.
+      # Loglarini degistiren kisi, genelde orada izini silmek isteyen kisidir.
+      # Cron bu betigi calistirdiginda sifir olmayan cikis kodu, izleme
+      # sisteminin (ya da en azindan cron mail'inin) haber almasini saglar.
+      warn "\n!! ARSIV BUTUNLUGU BOZULMUS -- bu bir guvenlik olayidir !!"
+      exit_code = 2
+    end
+
+  # ------------------------------------------------------------------------
+  when :stats
+    s = archiver.stats
+    puts '=== ARSIV DURUMU ==='
+    puts "dizin          : #{s[:directory]}"
+    puts "manifest       : #{s[:manifest]}"
+    puts "arsiv sayisi   : #{s[:archives]}"
+    puts "silme kaydi    : #{s[:deletions]}"
+    puts "saklama suresi : #{s[:retention_days]} gun " \
+         "(#{(s[:retention_days] / 365.0).round(1)} yil)"
+    if s[:raw_bytes].positive?
+      ratio = 100 - (s[:stored_bytes] * 100.0 / s[:raw_bytes])
+      puts format('ham boyut      : %.2f MB', s[:raw_bytes] / 1024.0 / 1024)
+      puts format('diskte         : %.2f MB  (%%%.1f tasarruf)',
+                  s[:stored_bytes] / 1024.0 / 1024, ratio)
+    end
+    puts "en eski        : #{s[:oldest] || '-'}"
+    puts "en yeni        : #{s[:newest] || '-'}"
+    puts "zincir basi    : #{s[:head_chain]}"
+
+  # ------------------------------------------------------------------------
+  when :roll
+    puts '=== LOGU DONDUR VE ARSIVLE ==='
+    entry = archiver.roll_and_archive!(config.fetch('log_file'))
+    if entry.nil?
+      puts 'log dosyasi bos veya yok -- atlandi'
+    else
+      puts "  dosya  : #{entry[:file]}"
+      puts "  satir  : #{entry[:lines]}"
+      puts format('  boyut  : %d -> %d bayt (%%%.1f)', entry[:bytes], entry[:stored_bytes],
+                  100 - (entry[:stored_bytes] * 100.0 / [entry[:bytes], 1].max))
+      puts "  sha256 : #{entry[:sha256]}"
+      puts "  zincir : #{entry[:chain]}"
+    end
+
+  # ------------------------------------------------------------------------
+  when :archive
+    puts "=== ARSIVLE: #{options[:archive_path]} ==="
+    entry = archiver.archive_file(options[:archive_path], move: false)
+    puts "  dosya  : #{entry[:file]}"
+    puts "  sha256 : #{entry[:sha256]}"
+    puts "  zincir : #{entry[:chain]}"
+
+  # ------------------------------------------------------------------------
+  when :prune
+    puts "=== SAKLAMA SURESI TEMIZLIGI#{options[:dry_run] ? ' (DENEME)' : ''} ==="
+    result = archiver.prune!(dry_run: options[:dry_run])
+    puts "kesim tarihi : #{result[:cutoff]}"
+    if result[:count].zero?
+      puts 'suresi gecen arsiv yok'
+    else
+      result[:removed].each { |r| puts "  #{r[:file]}  (#{r[:sealed_at]})" }
+      puts "#{result[:count]} arsiv #{options[:dry_run] ? 'silinecekti' : 'silindi'}"
+      puts 'silme islemleri manifest\'e kaydedildi' unless options[:dry_run]
+    end
+
+  # ------------------------------------------------------------------------
+  when :prune_db
+    storage = config['storage']
+    next puts 'sicak katman yapilandirilmamis -- atlandi' unless storage
+
+    begin
+      require_relative '../lib/log_sentry/store'
+    rescue LoadError
+      next puts 'sqlite3 gem yok -- atlandi'
+    end
+
+    days = storage.fetch('hot_retention_days', 90)
+    puts "=== SICAK KATMAN TEMIZLIGI (#{days} gun) ==="
+
+    store = LogSentry::Store.new(path: storage.fetch('database'))
+    before = store.stats
+
+    if options[:dry_run]
+      puts 'DENEME modu -- hicbir sey silinmedi'
+      puts "mevcut: #{before[:events]} olay, #{before[:alerts]} uyari"
+    else
+      result = store.prune!(days: days)
+      puts "kesim tarihi : #{result[:cutoff]}"
+      puts "silinen      : #{result[:events]} olay, #{result[:alerts]} uyari"
+      puts 'NOT: ham loglar arsivde duruyor -- bu bir veri kaybi degil.'
+      puts 'NOT: DELETE dosyayi kucultmez. Gerekirse: --vacuum'
+    end
+    store.close
+
+  # ------------------------------------------------------------------------
+  when :vacuum
+    storage = config['storage']
+    next puts 'sicak katman yapilandirilmamis -- atlandi' unless storage
+
+    require_relative '../lib/log_sentry/store'
+    store = LogSentry::Store.new(path: storage.fetch('database'))
+    before = store.stats[:size_bytes].to_i
+    puts '=== VACUUM ==='
+    store.vacuum!
+    after = store.stats[:size_bytes].to_i
+    puts format('%.2f MB -> %.2f MB', before / 1024.0 / 1024, after / 1024.0 / 1024)
+    store.close
+  end
+
+  puts
+end
+
+exit exit_code

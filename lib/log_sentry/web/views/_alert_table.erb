@@ -1,0 +1,30 @@
+<%#
+  Kismi sablon (partial). Hem dashboard hem alerts sayfasi bunu kullaniyor.
+  Tekrari azaltmak, HTML'de de kodda oldugu kadar degerli.
+%>
+<table class="alerts">
+  <thead>
+    <tr>
+      <th>Zaman</th><th>Önem</th><th>Kural</th><th>Kaynak IP</th>
+      <th>Durum</th><th class="num">Ölçülen</th><th></th>
+    </tr>
+  </thead>
+  <tbody>
+    <% alerts.each do |a| %>
+      <tr>
+        <td class="nowrap">
+          <%= h time_fmt(a[:time]) %>
+          <small class="muted"><%= h relative_time(a[:time]) %></small>
+        </td>
+        <td><span class="sev sev-<%= severity_class(a[:severity]) %>"><%= h a[:severity] %></span></td>
+        <td><code><%= h a[:rule] %></code></td>
+        <td><code><%= h a[:ip] %></code></td>
+        <%# message alani kural tarafindan uretiliyor ama icinde entry.path %>
+        <%# gecebiliyor -- yani saldirgan etkisi altinda. h() zorunlu. %>
+        <td><%= h a[:message] %></td>
+        <td class="num"><%= number a[:count] %> / <%= number a[:threshold] %></td>
+        <td><a class="btn" href="/alerts/<%= a[:id].to_i %>">kanıt →</a></td>
+      </tr>
+    <% end %>
+  </tbody>
+</table>

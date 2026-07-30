@@ -1,0 +1,154 @@
+<h1>Dashboard <small>son <%= @hours %> saat</small></h1>
+
+<section class="cards">
+  <div class="card">
+    <div class="card-label">Toplam olay</div>
+    <div class="card-value"><%= number @totals[:events] %></div>
+  </div>
+  <div class="card">
+    <div class="card-label">Toplam uyarı</div>
+    <div class="card-value"><%= number @totals[:alerts] %></div>
+  </div>
+  <div class="card">
+    <div class="card-label">Veritabanı</div>
+    <div class="card-value"><%= (@totals[:size_bytes].to_i / 1024.0 / 1024).round(2) %> <small>MB</small></div>
+  </div>
+  <div class="card">
+    <div class="card-label">Canlı akış</div>
+    <div class="card-value" id="sse-status"><small>bağlanıyor…</small></div>
+  </div>
+</section>
+
+<%
+  # ==========================================================================
+  #  SVG CUBUK GRAFIK -- elle cizim
+  # --------------------------------------------------------------------------
+  #  Dis kutuphane yok. Bir cubuk grafigin nasil ciziliyor oldugunu gormek,
+  #  hazir bir kutuphaneye veri gondermekten cok daha ogreticidir.
+  #
+  #  Mantik basit: en yuksek degeri bul, her cubugun yuksekligini o degere
+  #  ORANLA. SVG koordinat sistemi sol UST kosede baslar, yani cubugu
+  #  asagidan yukari cizmek icin y = taban - yukseklik hesabi gerekir.
+  # ==========================================================================
+  chart_h = 160
+  bar_gap = 2
+  max_val = ([1] + @hourly.map { |b| b[:total] }).max
+  bar_w   = @hourly.empty? ? 0 : [(760.0 / @hourly.size) - bar_gap, 40].min
+%>
+
+<section class="panel">
+  <h2>Trafik ve hatalar</h2>
+
+  <% if @hourly.empty? %>
+    <p class="empty">Bu aralıkta kayıt yok. Veri üretmek için:
+      <code>ruby tools/live_writer.rb --attack brute</code></p>
+  <% else %>
+    <svg class="chart" viewBox="0 0 780 <%= chart_h + 30 %>" role="img"
+         aria-label="Saat bazında istek sayısı">
+      <% @hourly.each_with_index do |bucket, i| %>
+        <%
+          total_h  = (bucket[:total] * 1.0 / max_val * chart_h).round
+          failed_h = (bucket[:failed_auth] * 1.0 / max_val * chart_h).round
+          error_h  = (bucket[:errors] * 1.0 / max_val * chart_h).round
+          x        = (i * (bar_w + bar_gap)).round
+        %>
+        <rect x="<%= x %>" y="<%= chart_h - total_h %>" width="<%= bar_w.round %>"
+              height="<%= total_h %>" class="bar-total">
+          <title><%= h time_fmt(bucket[:time]) %> — <%= number bucket[:total] %> istek</title>
+        </rect>
+        <% if failed_h.positive? %>
+          <rect x="<%= x %>" y="<%= chart_h - failed_h %>" width="<%= bar_w.round %>"
+                height="<%= failed_h %>" class="bar-failed">
+            <title><%= number bucket[:failed_auth] %> başarısız giriş</title>
+          </rect>
+        <% end %>
+        <% if error_h.positive? %>
+          <rect x="<%= x %>" y="<%= chart_h - error_h %>" width="<%= bar_w.round %>"
+                height="<%= error_h %>" class="bar-error">
+            <title><%= number bucket[:errors] %> sunucu hatası</title>
+          </rect>
+        <% end %>
+      <% end %>
+      <line x1="0" y1="<%= chart_h %>" x2="780" y2="<%= chart_h %>" class="axis"/>
+      <text x="0" y="<%= chart_h + 18 %>" class="axis-label">
+        <%= h @hourly.first[:time].strftime('%d %b %H:00') %>
+      </text>
+      <text x="780" y="<%= chart_h + 18 %>" class="axis-label" text-anchor="end">
+        <%= h @hourly.last[:time].strftime('%d %b %H:00') %>
+      </text>
+    </svg>
+
+    <div class="legend">
+      <span><i class="sw bar-total"></i> tüm istekler</span>
+      <span><i class="sw bar-failed"></i> başarısız giriş (401/403)</span>
+      <span><i class="sw bar-error"></i> sunucu hatası (5xx)</span>
+      <span class="muted">en yüksek saat: <%= number max_val %> istek</span>
+    </div>
+  <% end %>
+</section>
+
+<div class="two-col">
+  <section class="panel">
+    <h2>En çok istek yapan IP'ler</h2>
+    <% if @top_ips.empty? %>
+      <p class="empty">veri yok</p>
+    <% else %>
+      <table>
+        <thead><tr><th>IP</th><th class="num">İstek</th><th class="num">401/403</th></tr></thead>
+        <tbody>
+          <% total_all = @top_ips.sum { |r| r[:total] } %>
+          <% @top_ips.each do |row| %>
+            <tr>
+              <td>
+                <%# h() ZORUNLU: IP alani ayristirmadan geliyor, yani %>
+                <%# saldirgan tarafindan etkilenebilir bir alan. %>
+                <a href="/alerts?ip=<%= h row[:ip] %>"><code><%= h row[:ip] %></code></a>
+              </td>
+              <td class="num">
+                <%= number row[:total] %>
+                <span class="bar-inline" style="width: <%= (row[:total] * 100.0 / [total_all, 1].max).round %>%"></span>
+              </td>
+              <td class="num <%= row[:failed_auth].positive? ? 'warn' : '' %>">
+                <%= number row[:failed_auth] %>
+              </td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    <% end %>
+  </section>
+
+  <section class="panel">
+    <h2>Kural bazında uyarı</h2>
+    <% if @by_rule.empty? %>
+      <p class="empty">uyarı yok</p>
+    <% else %>
+      <table>
+        <tbody>
+          <% @by_rule.sort_by { |_r, c| -c }.each do |rule, count| %>
+            <tr>
+              <td><a href="/alerts?rule=<%= h rule %>"><%= h rule %></a></td>
+              <td class="num"><%= number count %></td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    <% end %>
+  </section>
+</div>
+
+<section class="panel">
+  <h2>Canlı akış <small>SSE — sayfa yenilenmeden güncellenir</small></h2>
+  <ul class="live" id="live-feed">
+    <li class="muted">yeni uyarı bekleniyor…</li>
+  </ul>
+</section>
+
+<section class="panel">
+  <h2>Son uyarılar</h2>
+  <% if @recent.empty? %>
+    <p class="empty">Hiç uyarı yok.</p>
+  <% else %>
+    <%= erb :_alert_table, locals: { alerts: @recent } %>
+  <% end %>
+</section>

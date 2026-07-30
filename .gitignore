@@ -1,0 +1,71 @@
+# ============================================================================
+#  LogSentry -- git tarafindan yok sayilacaklar
+# ============================================================================
+
+# --- Uretilen veri: kod degil, cikti ---------------------------------------
+# Bunlar `ruby tools/demo_env.rb` ile yeniden uretilebilir. Depoya koymak
+# hem gereksiz yer kaplar hem de her calistirmada devasa bir diff uretir.
+logs/*
+!logs/.gitkeep
+
+db/*
+!db/.gitkeep
+
+archive/*
+!archive/.gitkeep
+
+# --- Calisma zamani dosyalari ----------------------------------------------
+*.pid
+*.state
+.logsentry.state
+
+# --- SIRLAR ----------------------------------------------------------------
+# Webhook adresi ve token'lar ORTAM DEGISKENINDE tutulur, dosyada degil.
+# Yine de yanlislikla olusturulan yerel sir dosyalari icin emniyet kemeri:
+#
+# ONEMLI: git gecmisi silinmez. Bir kez commit edilen token, sonradan
+# dosyadan cikarilsa bile gecmiste durmaya devam eder. Sizan sirlarin en
+# yaygin sebebi budur.
+.env
+.env.*
+secrets.env
+config/secrets*.yml
+*.pem
+*.key
+
+# --- Ruby ------------------------------------------------------------------
+*.gem
+.bundle/
+vendor/bundle/
+.ruby-version
+coverage/
+
+# Gemfile.lock BILINCLI olarak depoya konmuyor.
+#
+# Sebep: kilit dosyasi uretildigi PLATFORMU kaydeder. Windows'ta uretilen
+# bir kilit "x64-mingw-ucrt" icerir; CI Ubuntu'da kostugunda bundler
+# "your bundle only supports platforms ..." diyerek hata verir.
+#
+# Bu proje bir kutuphane/arac (gemspec'i var); kutuphanelerde kilit dosyasi
+# commit etmemek zaten yaygin kabul goren yaklasimdir -- bagimliliklarin
+# gercek araligi gemspec'te tanimli.
+Gemfile.lock
+
+# --- Gecici / hata ayiklama --------------------------------------------------
+scratch/
+tmp/
+
+# --- Isletim sistemi -------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+*~
+
+# --- Editor ----------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- Yerel arac ayarlari ---------------------------------------------------
+.claude/

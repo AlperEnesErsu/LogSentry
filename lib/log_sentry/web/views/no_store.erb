@@ -1,0 +1,9 @@
+<h1>Depolama yapılandırılmamış</h1>
+<section class="panel fail-box">
+  <p>Bu sayfa <code>db/logsentry.db</code> veritabanına ihtiyaç duyuyor.</p>
+  <ol>
+    <li><code>config/logsentry.yml</code> içinde <code>storage.database</code> ayarlı olmalı</li>
+    <li><code>sqlite3</code> gem kurulu olmalı: <code>gem install sqlite3</code></li>
+    <li>Veri üretmek için: <code>ruby bin/logsentry --from-begin --once</code></li>
+  </ol>
+</section>

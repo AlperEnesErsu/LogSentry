@@ -1,0 +1,87 @@
+<%#
+  BU ARAYUZUN EN ONEMLI SAYFASI.
+
+  Bir uyari gordugunde ilk sorun "gercekten saldiri mi, yanlis alarm mi?"
+  olacak -- ve bu soruya ancak KANIT gorerek cevap verilir. Kanit gostermeyen
+  alarm gurultudur.
+%>
+
+<p class="crumb"><a href="/alerts">← uyarılar</a></p>
+
+<h1>
+  <span class="sev sev-<%= severity_class(@alert[:severity]) %>"><%= h @alert[:severity] %></span>
+  <%= h @alert[:rule] %>
+</h1>
+
+<section class="panel verdict">
+  <h2>Neden alarm verildi?</h2>
+  <p class="big">
+    <code><%= h @alert[:ip] %></code> adresinden
+    <strong><%= h @alert[:window] %> saniye</strong> içinde
+    <strong><%= number @alert[:count] %></strong> olay ölçüldü;
+    eşik <strong><%= number @alert[:threshold] %></strong>.
+  </p>
+  <p><%= h @alert[:message] %></p>
+
+  <dl class="meta">
+    <dt>Zaman</dt><dd><%= h @alert[:time_iso] %> <small class="muted">(<%= h relative_time(@alert[:time]) %>)</small></dd>
+    <dt>Kural</dt><dd><code><%= h @alert[:rule] %></code></dd>
+    <dt>Kaynak</dt><dd><code><%= h @alert[:ip] %></code></dd>
+    <% @alert[:details].each do |key, value| %>
+      <dt><%= h key %></dt><dd><code><%= h value.is_a?(Array) ? value.join(', ') : value %></code></dd>
+    <% end %>
+  </dl>
+</section>
+
+<section class="panel">
+  <h2>Kanıt <small>alarmı doğuran ham log satırları</small></h2>
+  <% if @alert[:evidence].empty? %>
+    <p class="empty">Bu kayıt için kanıt saklanmamış.</p>
+  <% else %>
+    <%#
+      HAM LOG SATIRI = SALDIRGANIN YAZDIGI METIN.
+      Buradaki h() bu sayfanin en kritik satiri. Olmasa, saldirgan
+      /login yerine "/<script>...</script>" isteyerek bu panelde kod
+      calistirirdi -- panele hic erismeden.
+    %>
+    <pre class="evidence"><% @alert[:evidence].each do |raw| %><%= h raw %>
+<% end %></pre>
+    <p class="muted small">
+      Bu satırlar üretildiği andaki haliyle saklanıyor (en fazla
+      <%= LogSentry::MAX_EVIDENCE %> satır). Tam kayıt için arşive bakılır.
+    </p>
+  <% end %>
+</section>
+
+<section class="panel">
+  <h2>Bağlam <small>aynı IP'nin alarm çevresindeki istekleri</small></h2>
+  <% if @context.empty? %>
+    <p class="empty">Bu aralıkta kayıtlı olay yok (<code>store_all_events</code> kapalı olabilir).</p>
+  <% else %>
+    <table class="events">
+      <thead><tr><th>Zaman</th><th>Metod</th><th>Yol</th><th class="num">Durum</th><th class="num">Bayt</th><th>User-Agent</th></tr></thead>
+      <tbody>
+        <% @context.first(60).each do |e| %>
+          <tr class="<%= e[:status].to_i >= 400 ? 'row-warn' : '' %>">
+            <td class="nowrap"><%= h e[:time].strftime('%H:%M:%S') %></td>
+            <td><code><%= h e[:method] %></code></td>
+            <td class="path"><code><%= h e[:path] %></code></td>
+            <td class="num"><%= h e[:status] %></td>
+            <td class="num"><%= number e[:bytes] %></td>
+            <td class="ua"><small><%= h e[:user_agent].to_s[0, 60] %></small></td>
+          </tr>
+        <% end %>
+      </tbody>
+    </table>
+    <% if @context.size > 60 %>
+      <p class="muted small"><%= @context.size - 60 %> kayıt daha var (gösterilmedi).</p>
+    <% end %>
+  <% end %>
+</section>
+
+<% unless @other_alerts.empty? %>
+  <section class="panel">
+    <h2>Aynı IP'nin diğer uyarıları <small><%= @other_alerts.size %> adet</small></h2>
+    <%= erb :_alert_table, locals: { alerts: @other_alerts } %>
+  </section>
+<% end %>

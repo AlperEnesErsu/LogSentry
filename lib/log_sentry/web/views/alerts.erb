@@ -1,0 +1,56 @@
+<h1>Uyarılar <small><%= number @total %> kayıt</small></h1>
+
+<form class="filters" method="get" action="/alerts">
+  <%#
+    Not: form method="get". Salt okunur bir arayuzde POST yok -- before
+    filtresi zaten GET/HEAD disini reddediyor. Filtreleme URL'de gorunur
+    olunca baglanti paylasilabilir hale de gelir.
+  %>
+  <label>
+    Kural
+    <select name="rule">
+      <option value="">hepsi</option>
+      <% %w[brute_force flood path_scan].each do |r| %>
+        <option value="<%= h r %>" <%= 'selected' if @filters[:rule] == r %>><%= h r %></option>
+      <% end %>
+    </select>
+  </label>
+
+  <label>
+    Önem
+    <select name="severity">
+      <option value="">hepsi</option>
+      <% %w[critical high medium low].each do |s| %>
+        <option value="<%= h s %>" <%= 'selected' if @filters[:severity] == s %>><%= h s %></option>
+      <% end %>
+    </select>
+  </label>
+
+  <label>
+    IP
+    <%# value="..." icinde h() olmasa saldirgan " karakteriyle attribute'dan %>
+    <%# cikip kendi kodunu ekleyebilirdi. escape_html tirnagi da cevirir. %>
+    <input type="text" name="ip" value="<%= h @filters[:ip] %>" placeholder="45.155.205.233">
+  </label>
+
+  <button type="submit">Filtrele</button>
+  <a class="btn-plain" href="/alerts">temizle</a>
+</form>
+
+<% if @alerts.empty? %>
+  <p class="empty">Bu filtrelere uyan uyarı yok.</p>
+<% else %>
+  <%= erb :_alert_table, locals: { alerts: @alerts } %>
+
+  <% if @pages > 1 %>
+    <nav class="pager">
+      <% if @page > 1 %>
+        <a href="<%= h page_url('/alerts', page: @page - 1) %>">← önceki</a>
+      <% end %>
+      <span>sayfa <%= @page %> / <%= @pages %></span>
+      <% if @page < @pages %>
+        <a href="<%= h page_url('/alerts', page: @page + 1) %>">sonraki →</a>
+      <% end %>
+    </nav>
+  <% end %>
+<% end %>

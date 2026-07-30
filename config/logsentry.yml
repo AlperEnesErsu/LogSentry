@@ -1,0 +1,176 @@
+# ============================================================================
+#  LogSentry yapilandirmasi
+# ----------------------------------------------------------------------------
+#  YAML, insanin okuyabildigi bir ayar dosyasi formatidir. Girinti (indentation)
+#  anlamlidir -- bosluklarla oynarken dikkatli ol, TAB kullanma.
+#
+#  Esik degerlerini koda gomek yerine buraya koymamizin sebebi:
+#  yarin "10 deneme cok dusuk, 25 yapalim" dedigimizde kodu yeniden
+#  yayinlamak yerine sadece bu dosyayi degistirip servisi yeniden baslatmak.
+#  Kurumsal sistemlerde kural esikleri HER ZAMAN kodun disindadir.
+# ============================================================================
+
+# Izlenecek log dosyasi
+log_file: logs/access.log
+
+# Uretilen uyarilarin yazilacagi dosya.
+# JSONL formati = her satirda bir JSON nesnesi. Hem "tail -f" ile insan
+# okuyabilir, hem satir satir makine ayristirabilir. Duz bir JSON dizisi
+# olsaydi ([{...},{...}]) her yeni kayitta tum dosyayi yeniden yazmak gerekirdi.
+alert_file: logs/alerts.jsonl
+
+# --- Kural esikleri --------------------------------------------------------
+rules:
+  # Sifre deneme saldirisi:
+  # ayni IP'den <window> saniye icinde <threshold> defadan fazla 401 gelirse
+  brute_force:
+    enabled: true
+    window: 60          # saniye
+    threshold: 10       # bu sayiyi ASARSA alarm
+    statuses: [401, 403]
+
+  # DDoS belirtisi:
+  # ayni IP'den <window> saniye icinde <threshold> defadan fazla istek gelirse
+  flood:
+    enabled: true
+    window: 1
+    threshold: 100
+
+  # Hassas dizin taramasi:
+  # ayni IP asagidaki yollardan <threshold> farkli tanesine dokunursa
+  path_scan:
+    enabled: true
+    window: 300
+    threshold: 3
+    paths:
+      - /admin
+      - /wp-login.php
+      - /wp-admin
+      - /.env
+      - /.git
+      - /phpmyadmin
+      - /config.php
+      - /backup
+
+  # SQL Injection tespiti:
+  sqli:
+    enabled: true
+    window: 60
+    threshold: 0
+
+  # XSS ve Komut Enjeksiyonu tespiti:
+  xss:
+    enabled: true
+    window: 60
+    threshold: 0
+
+  # Otomatik tarayici tespiti:
+  scanner:
+    enabled: true
+    window: 60
+    threshold: 0
+
+# --- Bildirim kanallari ----------------------------------------------------
+notifiers:
+  console:
+    enabled: true
+    color: true
+
+  file:
+    enabled: true
+
+  # ADIM 5'te dolduracagiz. Sirri buraya DEGIL, ortam degiskenine koyacagiz:
+  # webhook adresi gizli bir bilgidir, dosyaya yazilip paylasilmamalidir.
+  webhook:
+    enabled: false
+    # DIKKAT: burada adresin KENDISI degil, onu tutan ORTAM DEGISKENININ
+    # ADI yazili. Webhook adresi bir sirdir (icinde token vardir) ve
+    # yapilandirma dosyalari git'e girer. Git gecmisi silinmez: bir kez
+    # commit ettigin token, sonradan dosyadan cikarsan bile gecmiste durur.
+    url_env: LOGSENTRY_WEBHOOK_URL
+    format: telegram                 # telegram | slack | generic
+    timeout: 5                       # saniye -- bu OLMADAN uretime cikilmaz
+    rate_limit: 20                   # dakikada en fazla kac bildirim
+
+# --- Daemon (arka plan servisi) --------------------------------------------
+daemon:
+  # Calisan ornegin process kimligi buraya yazilir. "logsentry --stop"
+  # bu dosyayi okuyup o PID'e SIGTERM gonderir.
+  pid_file: logs/logsentry.pid
+
+  # Daemon modunda stdout/stderr buraya yonlendirilir. Arka planda
+  # terminal olmadigi icin ciktinin gidecegi baska bir yer yok.
+  log_file: logs/logsentry.log
+
+  # Tailer'in dosya icindeki konumunu kaydettigi yer. Servis yeniden
+  # baslatildiginda kaldigi yerden devam eder -- ne satir kaybeder ne
+  # ayni satiri iki kez isler.
+  state_file: logs/.logsentry.state
+
+# --- Gurultu kontrolu ------------------------------------------------------
+# Ayni IP icin ayni kural, <cooldown> saniye boyunca tekrar alarm uretmez.
+# Bu olmadan tek bir saldirida telefonuna 4000 bildirim duser.
+cooldown: 120
+
+# --- Depolama: SICAK katman ------------------------------------------------
+# Hizli sorgulanabilir veritabani. Web arayuzu buradan okur.
+# ONEMLI: burada tutulan sure, YASAL saklama suresi DEGILDIR.
+# Yasal saklama "archive" bolumundeki sogun katmanin isidir.
+storage:
+  database: db/logsentry.db
+
+  # Her istegi mi yoksa sadece uyarilari mi veritabanina yazalim?
+  # store_all_events: true  -> her satir kaydedilir (Explorer'da arama yapilir,
+  #                            ama veritabani hizli buyur)
+  # store_all_events: false -> sadece uyarilar (hafif, ama gecmis arama yok)
+  store_all_events: true
+
+  # Sicak katmanda kac gun tutulacak. Sure gecince veritabanindan silinir --
+  # ama ham log arsivde kalmaya devam eder, yani veri KAYBOLMAZ.
+  hot_retention_days: 90
+
+# --- Arsivleme: SOGUK katman (yasal saklama) -------------------------------
+# Ham log dosyalarinin dokunulmamis, sikistirilmis ve muhurlenmis kopyalari.
+#
+# DIKKAT: retention_days iki yonlu bir kisittir --
+#   * cok KISA olursa 5651 kapsaminda yukumluluk ihlali olabilir
+#   * cok UZUN olursa IP adresi kisisel veri oldugu icin KVKK ihlali olabilir
+# Bu degeri kendi kategorine gore mevzuati teyit ederek belirle.
+archive:
+  enabled: true
+  directory: archive
+
+  # 730 gun = 2 yil. Yaygin olarak anilan sure budur, ancak kategoriye
+  # (erisim saglayici / yer saglayici / toplu kullanim saglayici) gore
+  # degisir. HUKUKI GORUS DEGILDIR -- teyit et.
+  retention_days: 730
+
+  compress: true              # gzip: ~%90 kucultme. 2 yillik log icin sart.
+
+  # Butunluk muhru: her arsivin SHA-256 ozeti manifest'e yazilir ve her kayit
+  # kendinden oncekinin ozetini de icerir (hash zinciri). Boylece ortadaki bir
+  # dosyayi degistiren birinin sonraki TUM muhurleri de yeniden hesaplamasi
+  # gerekir -- yani sessizce degistirilemez.
+  seal: true
+  manifest: archive/manifest.jsonl
+
+  # Her arsivleme calismasinda eski muhurleri yeniden dogrula.
+  # Uyusmazlik bulunursa bu, kendi basina bir GUVENLIK OLAYIDIR -> alarm uret.
+  verify_on_run: true
+
+# --- Web arayuzu -----------------------------------------------------------
+web:
+  enabled: true
+
+  # SADECE localhost. Bu arayuz saldirganin en cok gormek istedigi ekran:
+  # hangi IP'sinin yakalandigini ve kurallarin esiklerini gosteriyor.
+  # Disariya acmak gerekiyorsa Nginx arkasindan, TLS + kimlik dogrulama ile.
+  bind: 127.0.0.1
+  port: 4567
+
+  # Arayuz salt okunurdur: kural degistirilemez, alarm silinemez.
+  # Yazma yetkisi olmayan bir panel, ele gecirilse bile hasar veremez.
+  read_only: true
+
+  page_size: 50               # listelerde sayfa basina kayit
+  live_stream: true           # SSE ile canli akis

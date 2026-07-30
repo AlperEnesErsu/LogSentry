@@ -1,0 +1,146 @@
+# ============================================================================
+#  systemd birim (unit) dosyasi -- LogSentry'yi bir SISTEM SERVISI yapar
+# ----------------------------------------------------------------------------
+#  ONEMLI KAVRAM: Process.daemon ile bu dosya BIRBIRININ ALTERNATIFIDIR,
+#  birbirini tamamlamaz.
+#
+#  Adim 5'te Process.daemon'u ogrendik cunku altta yatan mekanizmayi
+#  anlamak gerekiyor: fork, setsid, TTY'den kopma, PID dosyasi, sinyaller.
+#  Bunlar Unix'in temel kavramlari ve her servis yoneticisi bunlari kullanir.
+#
+#  AMA 2020'lerde uretimde ARTIK KENDI KENDINE DAEMONLASMIYORSUN.
+#  Bunun yerine programin ON PLANDA calisir, systemd (ya da Docker, ya da
+#  Kubernetes) onu arka planda TUTAR. Neden?
+#
+#    * Process.daemon fork edip ebeveyni oldurur. Servis yoneticisi
+#      "baslattigim process oldu" gorur ve kafasi karisir. Type=forking
+#      ile bu asilabilir ama gereksiz karmasiklik.
+#    * COKERSE KIM YENIDEN BASLATACAK? Kendi kendine daemonlasan bir
+#      process cokerse kimse haberdar olmaz. systemd Restart=always ile
+#      bunu ucretsiz cozer.
+#    * Log yonetimi: kendi log dosyani yonetmek, dondurmek, sikistirmak
+#      zorunda kalirsin. systemd stdout'u dogrudan journald'a yazar;
+#      `journalctl -u logsentry -f` ile aninda izlersin.
+#    * Sinirlar: bellek/CPU siniri, guvenlik kisitlari (asagida) ancak
+#      servis yoneticisi seviyesinde uygulanabilir.
+#
+#  Yani Process.daemon'u ogrenmek DOGRU, kullanmak genelde GEREKSIZ.
+#  Asagidaki dosyada `bin/logsentry` --daemon OLMADAN calistiriliyor.
+#
+#  KURULUM
+#    sudo cp deploy/logsentry.service /etc/systemd/system/
+#    sudo systemctl daemon-reload
+#    sudo systemctl enable --now logsentry
+#    systemctl status logsentry
+#    journalctl -u logsentry -f          # canli log
+#    sudo systemctl reload logsentry     # SIGHUP -> yapilandirmayi yenile
+#    sudo systemctl stop logsentry       # SIGTERM -> nazik kapanma
+# ============================================================================
+
+[Unit]
+Description=LogSentry - web sunucusu log izleme ve anomali tespiti
+Documentation=file:///opt/logsentry/ARCHITECTURE.md
+# Ag hazir olduktan sonra basla (webhook bildirimi icin gerekli)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Type=simple: program ON PLANDA calisir, systemd onu arka planda tutar.
+# --daemon KULLANMIYORUZ. Cift daemonlasma sadece karisiklik uretir.
+Type=simple
+
+# --- Kim olarak calissin? -------------------------------------------------
+# ASLA root DEGIL. Bu process sadece log dosyalarini OKUYOR; root yetkisine
+# ihtiyaci yok. Bir gun kodda bir zafiyet bulunursa, saldirganin eline
+# gececek yetki bu kullanicinin yetkisi kadar olur.
+# "En az yetki ilkesi" (principle of least privilege) tam olarak budur.
+#
+# Kullaniciyi olustur ve nginx log grubuna ekle:
+#   sudo useradd --system --no-create-home --shell /usr/sbin/nologin logsentry
+#   sudo usermod -aG adm logsentry        # Debian/Ubuntu'da nginx loglari
+User=logsentry
+Group=logsentry
+SupplementaryGroups=adm
+
+WorkingDirectory=/opt/logsentry
+ExecStart=/usr/bin/ruby /opt/logsentry/bin/logsentry --config /opt/logsentry/config/logsentry.yml
+
+# --- Sinyaller ------------------------------------------------------------
+# reload -> SIGHUP. Bizim Supervisor'imiz bunu yakalayip yapilandirmayi
+# yeniden okuyor, Tailer'in dosya konumunu KAYBETMEDEN.
+ExecReload=/bin/kill -HUP $MAINPID
+
+# stop -> SIGTERM (systemd varsayilani). 10 saniye icinde kapanmazsa
+# SIGKILL gonderir. Bizim nazik kapanmamiz bir saniyenin altinda surer.
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+# --- Cokerse ne olacak? ---------------------------------------------------
+# Kendi kendine daemonlasan bir process'te bu satirin karsiligi YOKTUR.
+# Servis yoneticisi kullanmanin en buyuk kazanci bu uc satirdir.
+Restart=always
+RestartSec=5
+# 5 dakikada 5'ten fazla cokerse pes et ve alarm durumunda kal.
+# Sonsuz yeniden baslatma dongusu, gercek sorunu maskelemekten baska
+# bir sey yapmaz -- ve loglari doldurur.
+StartLimitBurst=5
+StartLimitIntervalSec=300
+
+# --- Loglama --------------------------------------------------------------
+# stdout/stderr dogrudan journald'a. Kendi log dosyamizi dondurmek,
+# sikistirmak, temizlemek zorunda kalmiyoruz.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=logsentry
+
+# --- Sirlar ---------------------------------------------------------------
+# Webhook token'i BURAYA YAZILMAZ. Ayri bir dosyadan okunur ve o dosyanin
+# izinleri 600 olur (sadece root okuyabilir):
+#   sudo install -m 600 /dev/null /etc/logsentry/secrets.env
+#   sudo sh -c 'echo LOGSENTRY_WEBHOOK_URL=https://... >> /etc/logsentry/secrets.env'
+#
+# Neden ayri dosya? Cunku .service dosyasi genelde git'e girer ve
+# `systemctl cat logsentry` ile herkes tarafindan okunabilir.
+EnvironmentFile=-/etc/logsentry/secrets.env
+
+# --- Guvenlik kisitlari ---------------------------------------------------
+# Bunlar cekirdek seviyesinde uygulanir; kodda hata olsa bile gecerlidir.
+# Bir izleme aracinin kendisi hedef oldugunda (ki olur) zarari sinirlar.
+
+# Tum dosya sistemi salt okunur, asagida acikca izin verilenler haric.
+ProtectSystem=strict
+# /home erisimi yok
+ProtectHome=true
+# /tmp izole (kendi ozel /tmp'i olur)
+PrivateTmp=true
+# Yeni yetki kazanamaz (setuid ikili dosyalar etkisiz)
+NoNewPrivileges=true
+# Cekirdek ayarlarina, modullerine, izleme araclarina erisim yok
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+# Sadece IPv4/IPv6/Unix soketleri (webhook icin gerekli)
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# Bellegi hem yazilabilir hem calistirilabilir yapma (exploit'leri zorlastirir)
+MemoryDenyWriteExecute=true
+# Gerceklestirebilecegi sistem cagrilarini kisitla
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# Yazma izni SADECE su dizinlere:
+ReadWritePaths=/opt/logsentry/logs /opt/logsentry/db /opt/logsentry/archive
+# Nginx loglarini okuma izni (salt okunur)
+ReadOnlyPaths=/var/log/nginx
+
+# --- Kaynak sinirlari -----------------------------------------------------
+# Adim 4'te kayan pencerelere MAX_KEYS/MAX_EVENTS sinirlari koyduk.
+# Bu satir o sinirlarin ARKASINDAKI EMNIYET KEMERI: kodda gozden kacan
+# bir bellek sizintisi olsa bile makineyi goturmez.
+MemoryMax=256M
+# CPU'nun en fazla %50'si (tek cekirdek esdegeri)
+CPUQuota=50%
+# Acik dosya siniri
+LimitNOFILE=1024
+
+[Install]
+WantedBy=multi-user.target

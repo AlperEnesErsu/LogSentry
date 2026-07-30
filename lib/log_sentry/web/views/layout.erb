@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LogSentry</title>
+  <!--
+    DIS BAGIMLILIK YOK. Ne CDN, ne Google Fonts, ne CSS cercevesi.
+
+    Neden? Bir guvenlik izleme paneli, internete cikamayan bir sunucuda da
+    calismali (izole aglar, hava boslugu olan ortamlar). Ustelik her dis
+    kaynak, panele kod enjekte edebilecek yeni bir taraf demektir.
+  -->
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="logo">◈</span>
+      <span>LogSentry</span>
+      <span class="badge">salt okunur</span>
+    </div>
+    <nav>
+      <a href="/"          class="<%= request.path == '/' ? 'active' : '' %>">Dashboard</a>
+      <a href="/alerts"    class="<%= request.path.start_with?('/alerts') ? 'active' : '' %>">Uyarılar</a>
+      <a href="/integrity" class="<%= request.path == '/integrity' ? 'active' : '' %>">Bütünlük</a>
+    </nav>
+  </header>
+
+  <main>
+    <%= yield %>
+  </main>
+
+  <footer>
+    LogSentry v<%= h LogSentry::VERSION %> &middot;
+    <%= h Time.now.strftime('%Y-%m-%d %H:%M:%S') %> &middot;
+    yalnızca 127.0.0.1
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>

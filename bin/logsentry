@@ -1,0 +1,249 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# ============================================================================
+#  ADIM 5g -- bin/logsentry: calistirilabilir giris noktasi
+# ----------------------------------------------------------------------------
+#  Ilk satirdaki "#!/usr/bin/env ruby" ifadesine SHEBANG denir.
+#  Isletim sistemine "bu dosyayi ruby ile calistir" der. Boylece
+#      ./bin/logsentry
+#  yazabilirsin, "ruby bin/logsentry" yazmak zorunda kalmadan.
+#  (Once calistirma izni vermek gerekir: chmod +x bin/logsentry)
+#
+#  "/usr/bin/env ruby" yerine dogrudan "/usr/bin/ruby" yazmak yaygin bir
+#  hatadir: env, ruby'yi PATH'te ARAR. rbenv/rvm/asdf gibi surum
+#  yoneticileri kullanan sistemlerde ruby /usr/bin'de degildir.
+#
+#  KULLANIM
+#    bin/logsentry                      # on planda calistir (Ctrl-C ile dur)
+#    bin/logsentry --daemon             # arka plana cekil
+#    bin/logsentry --stop               # calisan ornegi durdur
+#    bin/logsentry --status             # durum
+#    bin/logsentry --reload             # yapilandirmayi yenile (SIGHUP)
+#    bin/logsentry --check              # yapilandirmayi dogrula ve cik
+#    bin/logsentry --from-begin --once  # gecmisi bir kez tara ve cik
+# ============================================================================
+
+require 'optparse'
+require 'json'
+
+lib_path = File.expand_path('../lib', __dir__)
+lib_path = File.expand_path('./lib') unless File.exist?(File.join(lib_path, 'log_sentry.rb'))
+$LOAD_PATH.unshift(lib_path) unless $LOAD_PATH.include?(lib_path)
+
+require 'log_sentry'
+
+root_dir = File.expand_path('..', __dir__)
+root_dir = Dir.pwd unless File.exist?(File.join(root_dir, 'config', 'logsentry.yml'))
+ROOT = root_dir
+
+options = {
+  config:     File.join(ROOT, 'config', 'logsentry.yml'),
+  daemon:     false,
+  from_begin: false,
+  once:       false,
+  quiet:      false,
+  action:     :run
+}
+
+OptionParser.new do |o|
+  o.banner = "LogSentry v#{LogSentry::VERSION} -- kullanim: bin/logsentry [secenekler]"
+
+  o.on('-c', '--config PATH', 'yapilandirma dosyasi') { |v| options[:config] = File.expand_path(v) }
+  o.on('-l', '--log PATH',    'izlenecek log dosyasi (config ayarini ezer)') { |v| options[:log_file] = v }
+  o.on('-p', '--pid PATH',    'PID dosyasi') { |v| options[:pid_file] = v }
+  o.on('-d', '--daemon',      'arka planda calis') { options[:daemon] = true }
+  o.on('-b', '--from-begin',  'dosyanin basindan oku') { options[:from_begin] = true }
+  o.on('-1', '--once',        'dosya sonuna gelince cik') { options[:once] = true }
+  o.on('-q', '--quiet',       'konsola alarm basma') { options[:quiet] = true }
+
+  o.on('--stop',    'calisan ornegi durdur (SIGTERM)') { options[:action] = :stop }
+  o.on('--reload',  'yapilandirmayi yenile (SIGHUP)')  { options[:action] = :reload }
+  o.on('--status',  'durum bilgisi')                   { options[:action] = :status }
+  o.on('--check',   'yapilandirmayi dogrula ve cik')   { options[:action] = :check }
+
+  o.on('-v', '--version', 'surum') do
+    puts "LogSentry v#{LogSentry::VERSION}"
+    exit 0
+  end
+  o.on('-h', '--help', 'bu yardim') do
+    puts o
+    exit 0
+  end
+end.parse!
+
+# --- Yapilandirmayi yukle --------------------------------------------------
+
+unless File.exist?(options[:config])
+  abort "HATA: yapilandirma dosyasi yok: #{options[:config]}"
+end
+
+config = YAML.load_file(options[:config])
+
+pid_path = options[:pid_file] ||
+           config.dig('daemon', 'pid_file') ||
+           File.join(ROOT, 'logs', 'logsentry.pid')
+log_path = config.dig('daemon', 'log_file') ||
+           File.join(ROOT, 'logs', 'logsentry.log')
+
+pidfile = LogSentry::Daemon::PidFile.new(pid_path)
+
+# ============================================================================
+#  EYLEMLER
+# ============================================================================
+
+case options[:action]
+
+# --- Calisan ornegi durdur -------------------------------------------------
+when :stop
+  # SIGTERM gonderiyoruz, SIGKILL degil.
+  #
+  # SIGTERM = "isini bitir ve kapan" -> tamponlari bosaltir, dosyalari
+  #           kapatir, PID dosyasini siler.
+  # SIGKILL = "hemen ol" -> hicbirini yapamaz. Tamponda bekleyen alarmlar
+  #           kaybolur, PID dosyasi bayat kalir.
+  #
+  # Once nazikce sor; ancak cevap vermezse zora basvur. Bu, sadece
+  # process yonetiminde degil, sistem tasariminin genelinde dogru sirdir.
+  begin
+    pid = pidfile.signal('TERM')
+    print "PID #{pid} durduruluyor"
+
+    # Gercekten kapandigini DOGRULA. "Sinyal gonderdim" ile "kapandi"
+    # ayni sey degildir; process kapanma isini bitirene kadar yasar.
+    30.times do
+      break unless pidfile.alive?
+
+      print '.'
+      sleep 0.2
+    end
+    puts
+
+    if pidfile.alive?
+      warn "UYARI: PID #{pid} 6 saniyede kapanmadi. " \
+           "Gerekirse: kill -9 #{pid}"
+      exit 1
+    end
+    puts 'durduruldu.'
+  rescue RuntimeError, Errno::ESRCH => e
+    abort "HATA: #{e.message}"
+  end
+
+# --- Yapilandirmayi yenile -------------------------------------------------
+when :reload
+  begin
+    pid = pidfile.signal('HUP')
+    puts "PID #{pid} yenileme sinyali aldi (SIGHUP). " \
+         "Sonuc icin: tail -n 5 #{log_path}"
+  rescue RuntimeError, Errno::ESRCH, ArgumentError => e
+    abort "HATA: #{e.message}"
+  end
+
+# --- Durum -----------------------------------------------------------------
+when :status
+  if pidfile.alive?
+    puts "durum        : CALISIYOR"
+    puts "PID          : #{pidfile.read}"
+    puts "PID dosyasi  : #{pidfile.path}"
+    puts "log dosyasi  : #{log_path}"
+    # NOT: bu deger YAPILANDIRMADAN okunuyor, calisan process'ten degil.
+    # Daemon --log ile baska bir dosyayla baslatildiysa burada gorunmez.
+    # Calisan process'in gercekte ne izledigini gormek icin USR1 kullan.
+    puts "config log_file: #{config['log_file']}  (calisan process farkli olabilir)"
+    puts
+    puts "canli istatistik icin: kill -USR1 #{pidfile.read} && tail -n 3 #{log_path}"
+  else
+    puts 'durum        : CALISMIYOR'
+    puts "PID dosyasi  : #{pidfile.path} " \
+         "(#{File.exist?(pidfile.path) ? 'BAYAT' : 'yok'})"
+    exit 1
+  end
+
+# --- Yapilandirmayi dogrula ------------------------------------------------
+#  Bu eylem kucuk ama uretimde altin degerindedir: yapilandirmayi
+#  DEGISTIRDIKTEN SONRA, servisi yeniden baslatmadan ONCE dogrularsin.
+#  Aksi halde bozuk bir YAML ile servisi durdurup bir daha baslatamazsin.
+when :check
+  begin
+    engine    = LogSentry::Engine.from_config(config)
+    watched   = File.expand_path(options[:log_file] || config.fetch('log_file'))
+
+    puts "yapilandirma : #{options[:config]}"
+    puts 'YAML         : gecerli'
+    puts "kurallar     : #{engine.rules.size} adet"
+    engine.rules.each do |r|
+      puts format('   - %-12s esik %-6d pencere %-5d sn  sogutma %d sn',
+                  r.name, r.threshold, r.window, r.cooldown)
+    end
+
+    puts "izlenen dosya: #{watched} " \
+         "(#{File.exist?(watched) ? 'var' : 'YOK -- olusana kadar beklenir'})"
+
+    notifiers = (config['notifiers'] || {}).select { |_k, v| v.is_a?(Hash) && v['enabled'] }
+    puts "bildirim     : #{notifiers.keys.join(', ')}"
+
+    if notifiers.key?('webhook')
+      env_name = config.dig('notifiers', 'webhook', 'url_env')
+      present  = ENV[env_name].to_s.strip.empty? ? 'AYARLANMAMIS' : 'ayarlanmis'
+      puts "  #{env_name}: #{present}"
+    end
+
+    puts "arsiv suresi : #{config.dig('archive', 'retention_days')} gun"
+    puts
+    puts 'SONUC: yapilandirma kullanilabilir.'
+  rescue StandardError => e
+    abort "YAPILANDIRMA HATASI: #{e.class}: #{e.message}"
+  end
+
+# --- Calistir --------------------------------------------------------------
+else
+  supervisor = nil
+
+  begin
+    # Daemon moduna gecmeden ONCE her seyi kur.
+    #
+    # Neden? Cunku arka plana cektikten sonra terminal yok: hata mesajini
+    # kimse gormez. Yapilandirma hatasi, eksik dosya, izin problemi --
+    # hepsi HENUZ terminal varken ortaya cikmali.
+    #
+    # "Once dogrula, sonra kopar" -- daemon yazarken en onemli sira budur.
+    supervisor = LogSentry::Supervisor.new(
+      config:      config,
+      config_path: options[:config],
+      log_file:    options[:log_file],
+      from_begin:  options[:from_begin],
+      quiet:       options[:quiet],
+      once:        options[:once]
+    )
+  rescue StandardError => e
+    abort "BASLATMA HATASI: #{e.class}: #{e.message}"
+  end
+
+  if options[:daemon]
+    unless LogSentry::Daemon.supported?
+      abort "HATA: daemon modu bu platformda desteklenmiyor (#{RUBY_PLATFORM}).\n" \
+            "      Process.daemon Windows'ta yok. WSL kullan:\n" \
+            '      wsl -d Ubuntu-22.04 ruby bin/logsentry --daemon'
+    end
+
+    # PID dosyasini daemonlasmadan ONCE kontrol et (zaten calisiyor mu?),
+    # ama YAZMAYI sonraya birak -- cunku Process.daemon fork yapar ve
+    # PID DEGISIR. Once yazsaydik dosyada olu bir PID kalirdi.
+    if pidfile.alive?
+      abort "HATA: LogSentry zaten calisiyor (PID #{pidfile.read})"
+    end
+
+    puts "arka plana cekiliyor -- log: #{log_path}"
+    LogSentry::Daemon.daemonize!(log_file: log_path)
+  end
+
+  pidfile.acquire!
+
+  begin
+    supervisor.run
+  ensure
+    # ensure blogu, istisna olsa da olmasa da calisir.
+    # PID dosyasinin ortada kalmamasini garanti etmenin tek yolu bu.
+    pidfile.release
+  end
+end

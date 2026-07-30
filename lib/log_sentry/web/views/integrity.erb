@@ -1,0 +1,86 @@
+<h1>Arşiv bütünlüğü</h1>
+
+<section class="panel <%= @result[:ok] ? 'ok-box' : 'fail-box' %>">
+  <h2><%= @result[:ok] ? '✓ Bütünlük sağlam' : '✗ BÜTÜNLÜK BOZULMUŞ' %></h2>
+  <% if @result[:ok] %>
+    <p><%= @result[:count] %> arşiv kaydının hash zinciri doğrulandı.
+       Hiçbir dosya değiştirilmemiş, hiçbir manifest kaydı kurcalanmamış.</p>
+  <% else %>
+    <p><strong>Bu kendi başına bir güvenlik olayıdır.</strong>
+       Loglarını değiştiren kişi, genelde orada izini silmek isteyen kişidir.
+       Aşağıdaki kayıtları inceleyin ve olay müdahalesi başlatın.</p>
+  <% end %>
+  <p class="muted small">
+    HTTP durum kodu da sonucu yansıtıyor (<%= @result[:ok] ? '200' : '500' %>),
+    böylece bir izleme aracı sayfayı ayrıştırmadan durumu anlayabilir.
+  </p>
+</section>
+
+<section class="panel">
+  <h2>Arşiv durumu</h2>
+  <dl class="meta">
+    <dt>Dizin</dt><dd><code><%= h @stats[:directory] %></code></dd>
+    <dt>Arşiv sayısı</dt><dd><%= number @stats[:archives] %></dd>
+    <dt>Silme kaydı</dt><dd><%= number @stats[:deletions] %></dd>
+    <dt>Saklama süresi</dt>
+    <dd><%= @stats[:retention_days] %> gün
+        <small class="muted">(<%= (@stats[:retention_days] / 365.0).round(1) %> yıl)</small></dd>
+    <% if @stats[:raw_bytes].to_i.positive? %>
+      <dt>Ham boyut</dt><dd><%= (@stats[:raw_bytes] / 1024.0 / 1024).round(2) %> MB</dd>
+      <dt>Diskte</dt>
+      <dd><%= (@stats[:stored_bytes] / 1024.0 / 1024).round(2) %> MB
+          <small class="muted">(%<%= (100 - @stats[:stored_bytes] * 100.0 / @stats[:raw_bytes]).round(1) %> tasarruf)</small></dd>
+    <% end %>
+    <dt>Zincir başı</dt><dd><code class="hash"><%= h @stats[:head_chain] %></code></dd>
+  </dl>
+  <p class="muted small">
+    Gerçek bir uyumluluk kurulumunda bu zincir başı dışarıda saklanır
+    (yazdırılır, e-posta ile gönderilir, yetkili zaman damgası sağlayıcısına
+    imzalatılır). O zaman tüm zinciri yeniden yazmak da işe yaramaz.
+  </p>
+</section>
+
+<section class="panel">
+  <h2>Kayıtlar</h2>
+  <% if @result[:entries].empty? %>
+    <p class="empty">Henüz arşivlenmiş dosya yok.
+      <code>bin/logsentry-archive --roll</code></p>
+  <% else %>
+    <table>
+      <thead><tr><th>#</th><th>Dosya</th><th>Dosya özeti</th><th>Zincir</th><th>Durum</th></tr></thead>
+      <tbody>
+        <% @result[:entries].each do |e| %>
+          <tr class="<%= e[:ok] ? '' : 'row-fail' %>">
+            <td class="num"><%= e[:index] + 1 %></td>
+            <td><code><%= h e[:file] %></code></td>
+            <td><%= e[:digest_ok] ? '✓' : '✗' %></td>
+            <td><%= e[:chain_ok] ? '✓' : '✗' %></td>
+            <td><%= e[:ok] ? 'sağlam' : h(e[:reason]) %></td>
+          </tr>
+        <% end %>
+      </tbody>
+    </table>
+  <% end %>
+</section>
+
+<% unless @deletions.empty? %>
+  <section class="panel">
+    <h2>Silme kayıtları <small>silme işlemi de bir olaydır</small></h2>
+    <table>
+      <thead><tr><th>Dosya</th><th>Silinme</th><th>Gerekçe</th></tr></thead>
+      <tbody>
+        <% @deletions.each do |d| %>
+          <tr>
+            <td><code><%= h d[:file] %></code></td>
+            <td class="nowrap"><%= h d[:deleted_at] %></td>
+            <td><%= h d[:reason] %></td>
+          </tr>
+        <% end %>
+      </tbody>
+    </table>
+    <p class="muted small">
+      "Bu log nerede?" sorusunun cevabı "bilmiyorum" değil, "şu tarihte
+      saklama süresi dolduğu için silindi" olmalı.
+    </p>
+  </section>
+<% end %>

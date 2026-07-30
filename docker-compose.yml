@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  logsentry:
+    build: .
+    command: bin/logsentry --from-begin
+    volumes:
+      - ./logs:/app/logs
+      - ./config:/app/config
+      - ./db:/app/db
+    restart: unless-stopped
+
+  logsentry-web:
+    build: .
+    command: bin/logsentry-web --bind 0.0.0.0 --port 4567
+    ports:
+      - "4567:4567"
+    volumes:
+      - ./logs:/app/logs
+      - ./config:/app/config
+      - ./db:/app/db
+    depends_on:
+      - logsentry
+    restart: unless-stopped
+
+  log-generator:
+    build: .
+    command: ruby tools/log_generator.rb --rate 10
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
