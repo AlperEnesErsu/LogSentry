@@ -3,7 +3,7 @@
 [![CI](https://github.com/AlperEnesErsu/LogSentry/actions/workflows/ci.yml/badge.svg)](https://github.com/AlperEnesErsu/LogSentry/actions/workflows/ci.yml)
 [![Ruby](https://img.shields.io/badge/ruby-%3E%3D%203.0-CC342D?logo=ruby&logoColor=white)](https://www.ruby-lang.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-190%20passing-brightgreen.svg)](#testler)
+[![Tests](https://img.shields.io/badge/tests-209%20passing-brightgreen.svg)](#testler)
 
 Web sunucusu loglarını canlı izleyen, saldırı örüntülerini tespit eden ve
 bildirim gönderen bir mini SIEM — **sıfırdan, adım adım, Ruby ile.**
@@ -45,7 +45,8 @@ LogSentry log dosyasını canlı izler, her satırı çözümler, kurallardan ge
 
 | Kural | Neyi ölçüyor | Pencere | Eşik | Önem |
 |---|---|---|---|---|
-| `brute_force` | aynı IP'den `401`/`403` yanıtları | 60 sn | 10 | high |
+| `brute_force` | aynı IP'den `401`/`403` yanıtları | 60 sn | 4 | high |
+| `credential_stuffing` | aynı giriş ucuna vuran **farklı IP** sayısı | 300 sn | 25 | high |
 | `flood` | aynı IP'den tüm istekler | 1 sn | 100 | high |
 | `path_scan` | aynı IP'den **farklı** hassas dizin sayısı | 300 sn | 3 | medium |
 | `sqli` | SQL enjeksiyonu imzaları (`union select`, `information_schema`…) | 60 sn | 0 | critical |
@@ -61,6 +62,84 @@ referer** alanlarına bakar, `scanner` ise **user-agent**'a. Sebep: her şeyi
 tarayan bir kural, user-agent'ında `union select` yazan masum bir istekte
 `critical` alarm üretir — ve eşiği `0` olan bir kuralda yanlış pozitif, gece
 3'te boşuna çalan telefon demektir.
+
+---
+
+## Load balancer arkasında çalıştırıyorsan — bunu okumadan kurma
+
+Sunucunun önünde bir load balancer, ters vekil veya WAF varsa **iki ayarı
+mutlaka değiştirmen gerekir**. Aksi halde araç sessizce ya kör kalır ya da
+yanlış IP'yi suçlar.
+
+### 1. Log formatı
+
+LB arkasında Nginx'in gördüğü `$remote_addr` **LB'nin adresidir**, gerçek
+istemci değil. Yaygın çözüm, log formatının sonuna `X-Forwarded-For` eklemektir:
+
+```nginx
+log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                '$status $body_bytes_sent "$http_referer" '
+                '"$http_user_agent" "$http_x_forwarded_for"';
+```
+
+Bu format `combined` ile **aynı değildir** — sonda fazladan bir alan var. Kalıp
+`\z` ile bittiği için yanlış format seçilirse **hiçbir satır eşleşmez** ve araç
+hata bile vermeden tamamen körleşir. Ölçtük: LB'li ortamda 200 saldırı satırı
+işlendi, **0 kayıt** çıktı.
+
+```yaml
+log_format: combined_xff
+```
+
+### 2. Güvenilir vekiller
+
+```yaml
+trusted_proxies:
+  - 10.0.0.0/8
+```
+
+**Neden "XFF'in ilk adresini al" yanlış?** Çünkü bu başlığı istemci de
+gönderebilir. Saldırgan isteğine `X-Forwarded-For: 8.8.8.8` ekler, LB kendi
+gördüğünü sona ekler ve zincir şöyle olur:
+
+```
+8.8.8.8, 45.155.205.233
+   ↑ uydurma      ↑ gerçek saldırgan
+```
+
+İlk adresi alırsan saldırganın seçtiği masum IP'yi engellersin — yani saldırgan
+kara listeyi silah olarak kullanır. Doğrusu zinciri **sağdan sola** yürüyüp
+kendi vekillerini atlamak ve güvenmediğin ilk adresi almaktır.
+
+`trusted_proxies` boş bırakılırsa XFF **hiç kullanılmaz** (güvenli varsayılan):
+kimin vekil olduğunu bilmeden zincire güvenmek, saldırganın kimliğini seçmesine
+izin vermektir.
+
+### 3. Eşiği önündeki korumaya göre ayarla
+
+LB, örneğin 5. başarısız denemede IP'yi karantinaya alıyorsa, tek bir IP'nin
+sayacı **5'i asla geçemez**. Eşiği 10 bırakırsan `brute_force` kuralı hiç
+çalışmaz — ve daha kötüsü, "brute force korumam var" sanırsın.
+
+> **Kural: eşik, önündeki korumanın kesme noktasından küçük olmalı.**
+
+Varsayılanı bu yüzden `4` yaptık.
+
+### 4. Saldırının şekli değişir
+
+Karantina saldırıyı engellemez, **biçimini değiştirir**. Tek IP'den 1000 deneme
+yapamayan saldırgan, 3000 farklı IP'den 3'er deneme yapar — ve IP başına sayan
+hiçbir kural bunu görmez. Ölçtük:
+
+```
+100 farklı IP × 3 deneme = 300 başarısız giriş
+  brute_force (IP başına sayan)      : 0 uyarı
+  credential_stuffing (hedefe sayan) : yakalıyor
+```
+
+`credential_stuffing` kuralı sayacı IP'den **hedefe** taşır: *"/login adresine
+kaç farklı IP başarısız giriş yaptı?"* Alarm, kaç farklı `/24` bloğundan
+geldiğini de raporlar — tek blok tek kaynak demektir, dağılmışsa botnet.
 
 `path_scan` diğerlerinden farklı: **hacim değil çeşitlilik** ölçüyor.
 `/admin`'e 50 istek muhtemelen bir yer imi; 5 farklı hassas dizine 1'er istek
@@ -387,19 +466,19 @@ ruby test/web_test.rb
 
 | Paket | Test | Doğrulama |
 |---|---|---|
-| `parser_test.rb` | 21 | 64 |
+| `parser_test.rb` | 30 | 95 |
 | `tailer_test.rb` | 15 | 24 (Win, 3 atlama) / 32 (WSL) |
-| `engine_test.rb` | 41 | 229 |
+| `engine_test.rb` | 54 | 560 |
 | `daemon_test.rb` | 29 | 86 |
 | `store_test.rb` | 47 | 136 |
 | `web_test.rb` | 33 | 106 |
-| **Toplam** | **190** | **0 hata** (Windows + WSL Ubuntu 22.04 + CI: 2 OS × 3 Ruby) |
+| **Toplam** | **209** | **0 hata** (Windows + WSL Ubuntu 22.04 + CI: 2 OS × 3 Ruby) |
 
 Yalnızca `minitest` (Ruby ile birlikte gelir). Windows'ta atlanan 3 test, açık
 dosyanın taşınamamasından — `skip` ile atlanıyor, sahte geçmiyor.
 
 Testler kasten **hızlı ve saf**: zaman uydurulmuş (`sleep 61` yok), veritabanı
-`:memory:`, gerçek HTTP isteği ve gerçek daemon yok. 190 test saniyeler içinde
+`:memory:`, gerçek HTTP isteği ve gerçek daemon yok. 209 test saniyeler içinde
 koşuyor.
 
 Her push'ta GitHub Actions üzerinde **Ubuntu ve Windows × Ruby 3.2 / 3.3 / 3.4**

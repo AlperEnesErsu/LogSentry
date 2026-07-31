@@ -53,7 +53,13 @@ module LogSentry
 
       @log_path = File.expand_path(log_file || config.fetch('log_file'))
 
-      @parser = Parser.new
+      # Parser artik yapilandirmadan kuruluyor: LB arkasindaki kurulumlarda
+      # hem log formati hem de gercek istemci adresinin nasil bulunacagi
+      # degisiyor (bkz. config/logsentry.yml -> log_format / trusted_proxies).
+      @parser = Parser.new(
+        format:          (config['log_format'] || 'combined').to_sym,
+        trusted_proxies: config['trusted_proxies'] || []
+      )
       @engine = Engine.from_config(config)
 
       # Depolama istege bagli: yapilandirmada storage yoksa Store hic

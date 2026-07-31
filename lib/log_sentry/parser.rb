@@ -13,6 +13,7 @@
 # ============================================================================
 
 require 'time'
+require 'ipaddr'
 require_relative 'entry'
 
 module LogSentry
@@ -99,7 +100,41 @@ module LogSentry
       \s*
     \z}x
 
-    FORMATS = { combined: COMBINED, common: COMMON }.freeze
+    # ------------------------------------------------------------------------
+    #  LOAD BALANCER / TERS VEKIL ARKASINDAKI FORMAT
+    # ------------------------------------------------------------------------
+    #  Sunucun bir LB arkasindaysa nginx'in $remote_addr degeri LB'nin
+    #  adresidir -- gercek istemci degil. Bu yuzden yaygin uygulama, log
+    #  formatinin sonuna X-Forwarded-For basligini eklemektir:
+    #
+    #    log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+    #                    '$status $body_bytes_sent "$http_referer" '
+    #                    '"$http_user_agent" "$http_x_forwarded_for"';
+    #
+    #  Bu format :combined ile AYNI DEGILDIR -- sonda fazladan bir alan var.
+    #  :combined kalibi \z ile bittigi icin boyle bir satiri hic eslestirmez;
+    #  yani yanlis format secilirse arac SESSIZCE tamamen korlesir.
+    #  (Bunu bizzat olctuk: LB'li ortamda 200 saldiri satiri, 0 kayit.)
+    # ------------------------------------------------------------------------
+    COMBINED_XFF = %r{\A
+      (?<ip>\S+)          \s+
+      (?<ident>\S+)       \s+
+      (?<user>\S+)        \s+
+      \[(?<time>[^\]]+)\] \s+
+      "(?<request>[^"]*)" \s+
+      (?<status>\d{3})    \s+
+      (?<bytes>\d+|-)     \s+
+      "(?<referer>[^"]*)" \s+
+      "(?<agent>[^"]*)"
+      (?:\s+"(?<forwarded_for>[^"]*)")?   # X-Forwarded-For zinciri
+      \s*
+    \z}x
+
+    FORMATS = {
+      combined:     COMBINED,
+      combined_xff: COMBINED_XFF,
+      common:       COMMON
+    }.freeze
 
     # ========================================================================
     #  IKI ASAMALI AYRISTIRMA -- neden?
@@ -138,7 +173,12 @@ module LogSentry
     # format: :combined veya :common
     # keep_raw: false yaparsan ham satir Entry icinde tutulmaz (bellek tasarrufu),
     #           ama kanit zincirini kaybedersin. Varsayilan: tut.
-    def initialize(format: :combined, keep_raw: true)
+    # trusted_proxies: kendi vekillerimizin/LB'lerimizin adres araliklari.
+    #   Ornek: ['10.0.0.0/8', '172.16.0.0/12']
+    #   Bos birakilirsa XFF zinciri KULLANILMAZ (guvenli varsayilan --
+    #   sebebi asagida, resolve_client_ip).
+    def initialize(format: :combined, keep_raw: true, trusted_proxies: [])
+      @trusted_proxies = build_trusted_proxies(trusted_proxies)
       @pattern = FORMATS.fetch(format) do
         # fetch'e blok verirsen, anahtar yoksa blok calisir.
         # Sessizce nil donmek yerine ANLASILIR bir hata firlatiyoruz:
@@ -215,8 +255,16 @@ module LogSentry
 
       @parsed_count += 1
 
+      remote_addr   = match[:ip]
+      forwarded_for = capture(match, :forwarded_for)
+      client_ip     = resolve_client_ip(remote_addr, forwarded_for)
+
       Entry.new(
-        ip:          match[:ip],
+        ip:            client_ip,
+        # Istemci LB'den farkliysa araya giren adresi de sakliyoruz:
+        # "hangi LB uzerinden geldi" sorusu olay incelemesinde ise yarar.
+        proxy_ip:      (remote_addr unless client_ip == remote_addr),
+        forwarded_for: forwarded_for,
         time:        time,
         http_method: request[:http_method],
         path:        request[:path],
@@ -265,6 +313,71 @@ module LogSentry
     end
 
     private   # ----- buradan asagisi sinifin ic isleri, disaridan cagrilmaz --
+
+    # ========================================================================
+    #  GERCEK ISTEMCI ADRESINI BULMAK
+    # ------------------------------------------------------------------------
+    #  Bu, gorunuste basit ama YANLIS YAPILMASI cok kolay bir istir; ve
+    #  yanlis yapildiginda tum IP bazli tespit ise yaramaz hale gelir.
+    #
+    #  NEDEN "XFF'in ilk adresini al" YANLIS?
+    #  Cunku X-Forwarded-For'u ISTEMCI de gonderebilir. Saldirgan istegine
+    #      X-Forwarded-For: 8.8.8.8
+    #  ekler; LB kendi gordugu adresi bunun SONUNA ekler ve zincir soyle olur:
+    #      8.8.8.8, 45.155.205.233
+    #  Ilk adresi alirsan saldirganin UYDURDUGU adresi engellersin --
+    #  yani saldirgan, istedigi masum IP'yi kara listeye attirabilir.
+    #  Buna "XFF spoofing" denir.
+    #
+    #  DOGRU YONTEM: zinciri SAGDAN SOLA yuru.
+    #  En sagdaki adres, bize en yakin olan ve GUVENDIGIMIZ vekilin gordugu
+    #  adrestir. Kendi vekillerimizi (trusted_proxies) atlaya atlaya sola
+    #  git; guvenmedigin ILK adres gercek istemcidir. Ondan solu saldirganin
+    #  uydurabilecegi bolgedir, dokunma.
+    #
+    #      [8.8.8.8 (uydurma), 45.155.205.233 (gercek), 10.0.0.7 (bizim LB)]
+    #                                ^ dogru cevap        ^ guvenilir, atla
+    #
+    #  GUVENLI VARSAYILAN: trusted_proxies bos ise XFF'e HIC BAKMIYORUZ.
+    #  Cunku kimin vekil oldugunu bilmeden zincire guvenmek, saldirganin
+    #  kimligini secmesine izin vermektir. Yapilandirilmamis bir sistemde
+    #  "yanlis IP'yi engellemek" yerine "vekilin IP'sini gormek" daha az
+    #  zararlidir.
+    # ========================================================================
+    def resolve_client_ip(remote_addr, forwarded_for)
+      return remote_addr if @trusted_proxies.empty?
+      return remote_addr if forwarded_for.nil? || forwarded_for.strip.empty?
+      return remote_addr if forwarded_for == '-'
+
+      # Tam zincir: XFF listesi + en sonda bize baglanan adres.
+      chain = forwarded_for.split(',').map(&:strip).reject(&:empty?)
+      chain << remote_addr
+
+      # Sagdan sola: guvenilir vekilleri atla, ilk guvenilmeyeni al.
+      client = chain.reverse.find { |addr| !trusted_proxy?(addr) }
+
+      # Zincirdeki herkes bizim vekilimizse (ic trafik) en soldakini al.
+      client || chain.first
+    end
+
+    def trusted_proxy?(address)
+      ip = IPAddr.new(address)
+      @trusted_proxies.any? { |range| range.include?(ip) }
+    rescue IPAddr::InvalidAddressError, ArgumentError
+      # Gecerli bir IP degilse guvenilir SAYMA. XFF'e cop yazmak, zincir
+      # yurumesini bozmaya calismanin bilinen bir yoludur.
+      false
+    end
+
+    def build_trusted_proxies(list)
+      Array(list).filter_map do |cidr|
+        IPAddr.new(cidr.to_s)
+      rescue IPAddr::InvalidAddressError, ArgumentError
+        # Yapilandirma hatasi sessizce yutulmasin.
+        warn "[parser] gecersiz trusted_proxies girdisi yok sayildi: #{cidr.inspect}"
+        nil
+      end
+    end
 
     # Nginx zaman formati: 29/Jul/2026:14:39:25 +0300
     #

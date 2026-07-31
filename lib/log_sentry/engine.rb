@@ -21,6 +21,7 @@
 require 'yaml'
 require_relative 'entry'
 require_relative 'rules/brute_force'
+require_relative 'rules/credential_stuffing'
 require_relative 'rules/flood'
 require_relative 'rules/path_scan'
 require_relative 'rules/sqli'
@@ -33,6 +34,7 @@ module LogSentry
     # Yeni bir kural eklemek = yeni bir dosya + buraya bir satir.
     RULE_CLASSES = {
       'brute_force' => Rules::BruteForce,
+      'credential_stuffing' => Rules::CredentialStuffing,
       'flood'       => Rules::Flood,
       'path_scan'   => Rules::PathScan,
       'sqli'        => Rules::Sqli,

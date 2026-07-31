@@ -469,8 +469,21 @@ class EngineTest < Minitest::Test
     config_path = File.expand_path('config/logsentry.yml') unless File.exist?(config_path)
     engine = LogSentry::Engine.from_config(config_path)
 
-    assert_equal 6, engine.rules.size
-    assert_equal %i[brute_force flood path_scan sqli xss scanner].sort, engine.rules.map(&:name).sort
+    # Beklenen listeyi ELLE YAZMIYORUZ, dosyanin kendisinden turetiyoruz.
+    #
+    # Sabit bir liste her yeni kuralda bu testi kirardi -- ve "kirilan testi
+    # duzeltmek" refleksi zamanla testin anlamini bosaltir. Buradaki asil
+    # soru "kac kural var" degil: yapilandirmada ETKIN yazan her kural
+    # gercekten YUKLENIYOR MU?
+    #
+    # Bu haliyle test, sessiz bir hatayi yakalamaya devam eder: config'de
+    # enabled: true yazan bir kural motorda yoksa haber verir.
+    expected = YAML.load_file(config_path)['rules']
+                   .select { |_name, opts| opts.is_a?(Hash) && opts['enabled'] }
+                   .keys.map(&:to_sym).sort
+
+    refute_empty expected, 'yapilandirmada etkin kural yok'
+    assert_equal expected, engine.rules.map(&:name).sort
   end
 
   def test_sqli_kurali_sql_enjeksiyonunu_yakalar
@@ -679,5 +692,118 @@ class EngineTest < Minitest::Test
 
     refute_nil scanner.call(entry(agent: 'sqlmap/1.8#stable'))
     assert_nil scanner.call(entry(agent: 'Mozilla/5.0 Chrome/126.0'))
+  end
+
+  # --------------------------------------------------------------------------
+  #  CREDENTIAL STUFFING -- dagitik deneme
+  # --------------------------------------------------------------------------
+  #  Bu kural, onunde karantina/rate-limit olan ortamlar icin var.
+  #  Load balancer 5. denemede IP'yi karantinaya aliyorsa, IP basina sayan
+  #  hicbir kural yuksek bir esige ulasamaz -- saldirgan da bunu bilir ve
+  #  3000 farkli IP'den 3'er deneme yapar.
+  # --------------------------------------------------------------------------
+
+  def test_credential_stuffing_ip_yerine_hedefe_sayar
+    rule = LogSentry::Rules::CredentialStuffing.new(window: 300, threshold: 5)
+
+    # 5 farkli IP -> esik asilmadi
+    5.times do |i|
+      assert_nil rule.call(entry(ip: "203.0.113.#{i + 1}", status: 401, path: '/login',
+                                 at: T0 + i))
+    end
+
+    # 6. farkli IP -> alarm
+    alert = rule.call(entry(ip: '203.0.113.6', status: 401, path: '/login', at: T0 + 6))
+
+    refute_nil alert
+    assert_equal :credential_stuffing, alert.rule
+    assert_equal 6, alert.count
+    assert_equal 6, alert.details[:distinct_ips]
+    assert_equal '/login', alert.details[:target_path]
+  end
+
+  def test_credential_stuffing_ayni_ipnin_tekrarini_sismez
+    # Olculen sey FARKLI IP sayisi. Tek bir IP 100 kez denese bile
+    # cesitlilik 1'dir -- o senaryo BruteForce'un isi.
+    rule = LogSentry::Rules::CredentialStuffing.new(window: 300, threshold: 5)
+
+    100.times do |i|
+      assert_nil rule.call(entry(ip: '1.2.3.4', status: 401, path: '/login', at: T0 + i))
+    end
+  end
+
+  def test_ip_basina_sayan_kural_dagitik_denemeyi_kaciriyor
+    # BU TESTIN AMACI YENI KURALIN VARLIK SEBEBINI BELGELEMEK.
+    #
+    # Karantina siniri altinda kalan dagitik bir saldiri, IP basina sayan
+    # kurala GORUNMEZ. Iki kuralin ayni veride farkli davrandigini
+    # gostermek, ikisinin de neden gerektigini kanitlar.
+    brute    = LogSentry::Rules::BruteForce.new(window: 60, threshold: 4)
+    stuffing = LogSentry::Rules::CredentialStuffing.new(window: 300, threshold: 25)
+
+    brute_alerts = 0
+    stuffing_alerts = 0
+
+    # 100 farkli IP, her biri 3 deneme (karantina siniri 5'in altinda)
+    100.times do |i|
+      3.times do |j|
+        e = entry(ip: "185.220.#{i / 254}.#{(i % 254) + 1}", status: 401,
+                  path: '/login', at: T0 + (i * 3) + j)
+        brute_alerts    += 1 if brute.call(e)
+        stuffing_alerts += 1 if stuffing.call(e)
+      end
+    end
+
+    assert_equal 0, brute_alerts,
+                 'IP basina sayan kural bu saldiriyi gormemeli (kuralin sinirini belgeler)'
+    assert_operator stuffing_alerts, :>, 0,
+                    'dagitik deneme kurali bu saldiriyi yakalamali'
+  end
+
+  def test_credential_stuffing_basarili_girisleri_saymaz
+    # 100 farkli calisanin sabah girisi alarm uretmemeli.
+    rule = LogSentry::Rules::CredentialStuffing.new(window: 300, threshold: 5)
+
+    100.times do |i|
+      assert_nil rule.call(entry(ip: "10.1.0.#{(i % 254) + 1}", status: 200,
+                                 path: '/login', at: T0 + i))
+    end
+  end
+
+  def test_credential_stuffing_giris_ucu_olmayan_yollari_saymaz
+    # Suresi dolmus API anahtariyla 401 alan istemciler, giris denemesi
+    # degildir. Tum 401'leri saymak bu gurultuyu iceri alirdi.
+    rule = LogSentry::Rules::CredentialStuffing.new(window: 300, threshold: 5)
+
+    100.times do |i|
+      assert_nil rule.call(entry(ip: "10.2.0.#{(i % 254) + 1}", status: 401,
+                                 path: '/api/v1/users', at: T0 + i))
+    end
+  end
+
+  def test_credential_stuffing_alt_ag_bilgisi_verir
+    # "Hepsi ayni /24'ten mi geliyor?" sorusu mudahale kararini degistirir:
+    # tek blok -> tek kaynak, engellemesi kolay; dagilmis -> botnet.
+    rule = LogSentry::Rules::CredentialStuffing.new(window: 300, threshold: 3)
+    alert = nil
+    6.times { |i| alert = rule.call(entry(ip: "203.0.113.#{i + 1}", status: 401,
+                                          path: '/login', at: T0 + i)) || alert }
+
+    refute_nil alert
+    assert_equal 1, alert.details[:distinct_subnets]
+    assert_operator alert.details[:sample_ips].size, :<=, 10,
+                    'ornek IP listesi sinirli olmali'
+  end
+
+  def test_credential_stuffing_yapilandirmadan_yuklenir
+    config = {
+      'rules' => {
+        'credential_stuffing' => { 'enabled' => true, 'window' => 300,
+                                   'threshold' => 25 }
+      }
+    }
+    engine = LogSentry::Engine.from_config(config)
+
+    assert_equal :credential_stuffing, engine.rules.first.name
   end
 end

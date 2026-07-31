@@ -13,6 +13,42 @@
 # Izlenecek log dosyasi
 log_file: logs/access.log
 
+# --- Log formati -----------------------------------------------------------
+#  combined      : standart Nginx/Apache formati (dogrudan internete acik
+#                  sunucu). $remote_addr = gercek istemci.
+#  combined_xff  : sonda "$http_x_forwarded_for" alani olan format
+#                  (load balancer / ters vekil arkasindaki sunucu).
+#  common        : Apache "common" -- referer ve user-agent YOK.
+#
+#  DIKKAT: YANLIS FORMAT SECMEK ARACI TAMAMEN KORLESTIRIR.
+#  Kaliplar \z ile bittigi icin, sonda fazladan bir alan varken "combined"
+#  secilirse HICBIR satir eslesmez ve arac sessizce hicbir sey gormez.
+#  Kurulumdan sonra mutlaka dogrula:
+#      bin/logsentry --from-begin --once
+#  ciktisindaki ayristirma basari oranina bak.
+log_format: combined
+
+# --- Guvenilir vekiller (load balancer / ters vekil) -----------------------
+#  Sunucun bir LB arkasindaysa nginx'in gordugu adres LB'nindir; gercek
+#  istemci X-Forwarded-For basligindadir. Ama XFF'i ISTEMCI DE gonderebilir:
+#
+#      X-Forwarded-For: 8.8.8.8          <- saldirganin uydurdugu
+#      ...LB kendi gordugunu ekler:  8.8.8.8, 45.155.205.233
+#
+#  Zincirin ILK adresini almak, saldirganin istedigi masum IP'yi kara
+#  listeye attirmasina izin verir. Dogrusu: zinciri SAGDAN SOLA yuruyup
+#  kendi vekillerimizi atlamak ve guvenmedigimiz ilk adresi almak.
+#
+#  Asagiya KENDI LB'lerinin adres araliklarini yaz. BOS BIRAKILIRSA XFF
+#  hic kullanilmaz (guvenli varsayilan): kimin vekil oldugunu bilmeden
+#  zincire guvenmek, saldirganin kimligini secmesine izin vermektir.
+trusted_proxies: []
+# Ornek:
+# trusted_proxies:
+#   - 10.0.0.0/8
+#   - 172.16.0.0/12
+#   - 192.168.0.0/16
+
 # Uretilen uyarilarin yazilacagi dosya.
 # JSONL formati = her satirda bir JSON nesnesi. Hem "tail -f" ile insan
 # okuyabilir, hem satir satir makine ayristirabilir. Duz bir JSON dizisi
@@ -23,11 +59,33 @@ alert_file: logs/alerts.jsonl
 rules:
   # Sifre deneme saldirisi:
   # ayni IP'den <window> saniye icinde <threshold> defadan fazla 401 gelirse
+  # ONEMLI -- ESIGI ONUNDEKI KORUMAYA GORE AYARLA:
+  #
+  # Sunucunun onunde bir load balancer / WAF varsa ve o, orn. 5. basarisiz
+  # denemede IP'yi karantinaya aliyorsa, tek bir IP'nin sayaci 5'i ASLA
+  # gecemez. Esigi 10 birakirsan bu kural HIC CALISMAZ -- ve daha kotusu,
+  # "brute force korumam var" sanirsin.
+  #
+  # Kural: esik, onundeki korumanin kesme noktasindan KUCUK olmali.
+  # Karantina 5'te ise burasi en fazla 3-4 olmali (ki karantinadan ONCE
+  # haberin olsun).
   brute_force:
     enabled: true
     window: 60          # saniye
-    threshold: 10       # bu sayiyi ASARSA alarm
+    threshold: 4        # bu sayiyi ASARSA alarm (5'te karantina varsayimi)
     statuses: [401, 403]
+
+  # Dagitik giris denemesi (credential stuffing):
+  # IP basina sayan kurallar, onunde karantina olan bir ortamda korlesir --
+  # cunku saldirgan 3000 farkli IP'den 3'er deneme yapar ve hicbiri esigi
+  # gecmez. Bu kural sayaci IP'den HEDEFE tasir: "/login adresine kac
+  # FARKLI IP basarisiz giris yapti?"
+  credential_stuffing:
+    enabled: true
+    window: 300         # 5 dakika
+    threshold: 25       # 25'ten fazla FARKLI IP -> alarm
+    # Kendi trafigine gore ayarla: bu deger bir tahmindir, olcum degil.
+    # Once bir hafta izleyip normal degeri gor, sonra esigi koy.
 
   # DDoS belirtisi:
   # ayni IP'den <window> saniye icinde <threshold> defadan fazla istek gelirse

@@ -43,7 +43,20 @@ module LogSentry
   #  kullanmaktan kacin.
   # --------------------------------------------------------------------------
   Entry = Struct.new(
-    :ip,          # String  -> "45.155.205.233"    istegi yapan adres
+    # ------------------------------------------------------------------------
+    #  ip: KURALLARIN KULLANDIGI ADRES -- yani GERCEK ISTEMCI.
+    #
+    #  Dogrudan internete acik bir sunucuda bu, nginx'in $remote_addr degeri.
+    #  AMA sunucu bir load balancer / ters vekil arkasindaysa $remote_addr
+    #  LB'nin adresidir; gercek istemci X-Forwarded-For basligindadir.
+    #
+    #  Parser bu ayrimi cozup buraya HER ZAMAN gercek istemciyi yaziyor.
+    #  Boylece kurallarin hicbiri "LB var mi yok mu" diye bilmek zorunda
+    #  kalmiyor -- karmasikligi tek bir yerde (Parser) hapsediyoruz.
+    # ------------------------------------------------------------------------
+    :ip,          # String  -> "45.155.205.233"    GERCEK istemci
+    :proxy_ip,    # String  -> "10.0.0.7"          araya giren LB (yoksa nil)
+    :forwarded_for, # String -> ham XFF zinciri    (yoksa nil)
     :time,        # Time    -> 2026-07-29 14:39:25 LOGUN kendi zamani
     :http_method, # String  -> "POST"
     :path,        # String  -> "/login"
@@ -86,6 +99,11 @@ module LogSentry
     # Ikisi de "girmeye calisti, giremedi" anlamina gelir.
     def failed_auth?
       status == 401 || status == 403
+    end
+
+    # Istek bir vekil/LB uzerinden mi geldi?
+    def proxied?
+      !proxy_ip.nil?
     end
 
     # Ayristirilamayan bir istek satiri miydi?

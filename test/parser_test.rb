@@ -243,6 +243,131 @@ class ParserTest < Minitest::Test
   #  Mimari sozu: "yarin baska log formati gelirse SADECE parser degisir."
   # --------------------------------------------------------------------------
 
+  # --------------------------------------------------------------------------
+  #  LOAD BALANCER / TERS VEKIL ARKASINDA
+  # --------------------------------------------------------------------------
+
+  XFF_LINE = '10.0.0.7 - - [29/Jul/2026:14:39:25 +0300] "POST /login HTTP/1.1" ' \
+             '401 178 "-" "python-requests/2.31.0" "45.155.205.233"'
+
+  def test_combined_format_xff_satirini_eslestiremez
+    # KRITIK DAVRANIS: kalip \z ile bittigi icin, sonda fazladan bir alan
+    # varken "combined" secilirse HICBIR satir eslesmez.
+    #
+    # Yani yanlis format secmek araci SESSIZCE tamamen korlestirir --
+    # cikti uretmez, hata da vermez. Bunu olctuk: LB'li ortamda 200 saldiri
+    # satiri islendi, 0 kayit cikti.
+    assert_nil @parser.parse(XFF_LINE)
+    assert_equal 1, @parser.failed_count
+  end
+
+  def test_combined_xff_formati_ayristirilir
+    parser = LogSentry::Parser.new(format: :combined_xff)
+    e = parser.parse(XFF_LINE)
+
+    refute_nil e
+    assert_equal 401, e.status
+    assert_equal '/login', e.path
+    assert_equal '45.155.205.233', e.forwarded_for
+  end
+
+  def test_trusted_proxies_bos_ise_xff_kullanilmaz
+    # GUVENLI VARSAYILAN: kimin vekil oldugunu bilmeden zincire guvenmek,
+    # saldirganin kimligini secmesine izin vermektir.
+    parser = LogSentry::Parser.new(format: :combined_xff)
+    e = parser.parse(XFF_LINE)
+
+    assert_equal '10.0.0.7', e.ip, 'guvenilir vekil tanimli degilken XFF yok sayilmali'
+    assert_nil e.proxy_ip
+    refute e.proxied?
+  end
+
+  def test_guvenilir_vekil_arkasinda_gercek_istemci_bulunur
+    parser = LogSentry::Parser.new(format: :combined_xff,
+                                   trusted_proxies: ['10.0.0.0/8'])
+    e = parser.parse(XFF_LINE)
+
+    assert_equal '45.155.205.233', e.ip,       'gercek istemci XFF\'ten alinmali'
+    assert_equal '10.0.0.7',       e.proxy_ip, 'araya giren LB kaydedilmeli'
+    assert e.proxied?
+  end
+
+  def test_xff_sahtekarligi_engellenir
+    # SALDIRI SENARYOSU:
+    # Saldirgan istegine kendi X-Forwarded-For basligini ekler:
+    #     X-Forwarded-For: 8.8.8.8
+    # LB kendi gordugu adresi bunun SONUNA ekler:
+    #     8.8.8.8, 45.155.205.233
+    #
+    # Zincirin ILK adresini alan bir kod, saldirganin UYDURDUGU adresi
+    # gercek istemci sanir -- yani saldirgan, istedigi masum IP'yi
+    # (ornegin 8.8.8.8'i) kara listeye attirabilir.
+    #
+    # Dogrusu: sagdan sola yuru, guvenilir vekilleri atla, guvenmedigin
+    # ILK adresi al. Ondan solu saldirganin uydurabilecegi bolgedir.
+    parser = LogSentry::Parser.new(format: :combined_xff,
+                                   trusted_proxies: ['10.0.0.0/8'])
+    line = '10.0.0.7 - - [29/Jul/2026:14:39:25 +0300] "POST /login HTTP/1.1" ' \
+           '401 178 "-" "curl" "8.8.8.8, 45.155.205.233"'
+
+    e = parser.parse(line)
+
+    assert_equal '45.155.205.233', e.ip,
+                 'saldirganin uydurdugu adres gercek istemci sanilmamali'
+    refute_equal '8.8.8.8', e.ip
+  end
+
+  def test_zincirdeki_herkes_guvenilirse_en_soldaki_alinir
+    # Ic trafik: istek bizim vekillerimizin arasinda dolasmis.
+    parser = LogSentry::Parser.new(format: :combined_xff,
+                                   trusted_proxies: ['10.0.0.0/8'])
+    line = '10.0.0.7 - - [29/Jul/2026:14:39:25 +0300] "GET / HTTP/1.1" ' \
+           '200 100 "-" "curl" "10.0.0.99, 10.0.0.8"'
+
+    assert_equal '10.0.0.99', parser.parse(line).ip
+  end
+
+  def test_xff_icindeki_cop_veri_cokmez
+    # XFF'e gecersiz veri yazmak, zincir yurumesini bozmaya calismanin
+    # bilinen bir yoludur. Gecersiz adres GUVENILIR SAYILMAMALI.
+    parser = LogSentry::Parser.new(format: :combined_xff,
+                                   trusted_proxies: ['10.0.0.0/8'])
+
+    ['"cop, 45.155.205.233"', '"-"', '""', '"   "', '"1.2.3.4,"'].each do |xff|
+      line = '10.0.0.7 - - [29/Jul/2026:14:39:25 +0300] "GET / HTTP/1.1" ' \
+             "200 100 \"-\" \"curl\" #{xff}"
+      e = parser.parse(line)
+      refute_nil e, "bu XFF degeri kaydi cope atmamali: #{xff}"
+      refute_nil e.ip
+    end
+  end
+
+  def test_gecersiz_trusted_proxies_girdisi_yok_sayilir
+    # Yapilandirma hatasi sessizce yutulmamali ama servisi de durdurmamali.
+    parser = nil
+    _out, err = capture_io do
+      parser = LogSentry::Parser.new(format: :combined_xff,
+                                     trusted_proxies: ['10.0.0.0/8', 'bu-bir-ip-degil'])
+    end
+
+    assert_match(/gecersiz trusted_proxies/, err)
+    # Gecerli olan girdi hala calismali
+    assert_equal '45.155.205.233', parser.parse(XFF_LINE).ip
+  end
+
+  def test_xff_alani_olmayan_satir_da_ayristirilir
+    # LB'siz gelen istekte nginx bu alani bos birakabilir.
+    parser = LogSentry::Parser.new(format: :combined_xff,
+                                   trusted_proxies: ['10.0.0.0/8'])
+    line = '88.243.11.7 - - [29/Jul/2026:14:39:25 +0300] "GET / HTTP/1.1" ' \
+           '200 100 "-" "Chrome"'
+
+    e = parser.parse(line)
+    refute_nil e
+    assert_equal '88.243.11.7', e.ip
+    assert_nil e.proxy_ip
+  end
+
   def test_common_format
     parser = LogSentry::Parser.new(format: :common)
     e = parser.parse('1.2.3.4 - - [29/Jul/2026:14:39:25 +0300] "GET / HTTP/1.1" 200 512')
