@@ -38,8 +38,17 @@ step 'Temizlik'
   File.delete(f)
   puts "  silindi: #{f}"
 end
-FileUtils.rm_rf('archive')
+# DIKKAT: klasorun KENDISINI degil, ICINDEKILERI siliyoruz.
+#
+# Onceki surumde `rm_rf('archive')` yaziyordu; bu, klasorun git'te var
+# olmasini saglayan .gitkeep dosyasini da goturuyordu. Demo ortamini
+# hazirlamak, depo yapisini bozmamali.
+FileUtils.rm_rf(Dir.glob('archive/*'))
 FileUtils.mkdir_p(%w[db logs archive])
+%w[db logs archive].each do |dir|
+  keep = File.join(dir, '.gitkeep')
+  FileUtils.touch(keep) unless File.exist?(keep)
+end
 
 # ---------------------------------------------------------------------------
 step '24 saate yayilmis log uretiliyor'
