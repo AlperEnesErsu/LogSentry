@@ -1,0 +1,532 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# ============================================================================
+#  bin/logsentry-doctor -- ortam teshisi ve yapilandirma onerisi
+# ----------------------------------------------------------------------------
+#  NEDEN BOYLE BIR ARAC?
+#
+#  Bu projenin en pahali dersi suydu: kod dogruydu, testler geciyordu, CI
+#  yesildi -- ama gercek ortamda arac HICBIR SEY GORMUYORDU. Cunku o ortamda
+#  bir load balancer vardi ve log formati farkliydi.
+#
+#  Bir guvenlik aracinin en tehlikeli arizasi cokmek degil, CALISIYOR
+#  GORUNUP KOR KALMAKTIR. Ve bu ariza, ancak GERCEK log dosyasina bakarak
+#  anlasilir.
+#
+#  Bu betik tahmin etmez, OLCER:
+#    - hangi log formati uyuyor (ve kac satir eslesmiyor)
+#    - onunde bir vekil/LB var mi
+#    - WAF/rate-limit devrede mi, hangi durum kodunu donduruyor
+#    - tek bir IP'nin ulasabildigi EN YUKSEK basarisiz giris sayisi kac
+#      (yani brute_force esigi en fazla kac olabilir)
+#    - hangi yollar giris ucu gibi davraniyor
+#    - klasorde rotasyon izi var mi
+#
+#  Sonunda, olculen degerlere gore bir yapilandirma onerisi basar.
+#
+#  KULLANIM
+#    bin/logsentry-doctor                       # config'deki log dosyasi
+#    bin/logsentry-doctor /var/log/nginx/access.log
+#    bin/logsentry-doctor --sample 500000       # daha genis ornek
+# ============================================================================
+
+require 'optparse'
+require 'yaml'
+
+lib_path = File.expand_path('../lib', __dir__)
+lib_path = File.expand_path('./lib') unless File.exist?(File.join(lib_path, 'log_sentry.rb'))
+$LOAD_PATH.unshift(lib_path) unless $LOAD_PATH.include?(lib_path)
+
+require 'log_sentry/parser'
+
+root_dir = File.expand_path('..', __dir__)
+root_dir = Dir.pwd unless File.exist?(File.join(root_dir, 'config', 'logsentry.yml'))
+
+options = { config: File.join(root_dir, 'config', 'logsentry.yml'), sample: 200_000 }
+
+OptionParser.new do |o|
+  o.banner = 'kullanim: bin/logsentry-doctor [log-dosyasi] [secenekler]'
+  o.on('-c', '--config PATH', 'yapilandirma dosyasi') { |v| options[:config] = File.expand_path(v) }
+  o.on('-n', '--sample N', Integer, 'incelenecek satir sayisi (varsayilan 200000)') { |v| options[:sample] = v }
+  o.on('-h', '--help') do
+    puts o
+    exit 0
+  end
+end.parse!
+
+# --- Incelenecek dosya ------------------------------------------------------
+log_path = ARGV[0]
+if log_path.nil? && File.exist?(options[:config])
+  cfg = YAML.load_file(options[:config])
+  log_path = cfg['log_file']
+  Dir.chdir(root_dir)
+end
+abort 'HATA: incelenecek log dosyasi belirtilmedi' if log_path.nil?
+log_path = File.expand_path(log_path)
+abort "HATA: dosya yok: #{log_path}" unless File.exist?(log_path)
+
+def section(title)
+  puts "\n#{'=' * 74}"
+  puts " #{title}"
+  puts '=' * 74
+end
+
+def verdict(mark, text)
+  puts "  [#{mark}] #{text}"
+end
+
+# Sinirsiz buyuyen yapiya bu betikte de yer yok: cok fazla farkli IP
+# gorursek saymayi birakiyoruz (teshis icin ornek zaten yeterli).
+MAX_TRACKED_IPS = 200_000
+
+# credential_stuffing kuralinin varsayilan penceresi. Oneriyi ayni birimde
+# hesaplamak icin burada da kullaniyoruz.
+STUFFING_WINDOW = 300
+
+puts "\nLogSentry Doctor -- ortam teshisi"
+puts "Dosya : #{log_path}"
+puts format('Boyut : %.2f MB', File.size(log_path) / 1024.0 / 1024)
+
+# ============================================================================
+section ' 1) LOG FORMATI'
+# ============================================================================
+#  Formatlari GERCEK satirlarla deniyoruz. "Muhtemelen combined'dir" demek
+#  yerine olcuyoruz -- cunku sonda tek bir fazladan alan, kalibi \z ile
+#  bittigi icin TUM satirlari eslesmez yapar ve arac sessizce korlesir.
+
+sample_lines = []
+File.foreach(log_path) do |line|
+  sample_lines << line
+  break if sample_lines.size >= [options[:sample], 5_000].min
+end
+
+format_scores = LogSentry::Parser::FORMATS.keys.to_h do |fmt|
+  parser = LogSentry::Parser.new(format: fmt)
+  ok = sample_lines.count { |l| parser.parse(l) }
+  [fmt, sample_lines.empty? ? 0.0 : (ok * 100.0 / sample_lines.size)]
+end
+
+puts "\n  Incelenen ornek satir: #{sample_lines.size}\n\n"
+format_scores.sort_by { |_f, s| -s }.each do |fmt, score|
+  bar = '#' * (score / 5).round
+  puts format('    %-14s %6.1f%%  %s', fmt, score, bar)
+end
+
+best_format, best_score = format_scores.max_by { |_f, s| s }
+puts
+
+if best_score >= 99
+  verdict('OK', "En uygun format: #{best_format}  (%#{best_score.round(1)} eslesme)")
+elsif best_score >= 80
+  verdict('DIKKAT', "En uygun format: #{best_format} ama %#{(100 - best_score).round(1)} satir eslesmiyor.")
+  verdict('DIKKAT', 'Ozel bir log_format kullaniyor olabilirsin; ornek satirlara bak.')
+else
+  verdict('HATA', "Hicbir format uymuyor (en iyi: #{best_format}, %#{best_score.round(1)}).")
+  verdict('HATA', 'Bu haliyle arac HICBIR SEY GORMEZ. Ornek satir:')
+  puts "         #{sample_lines.first.to_s.strip[0, 120]}"
+end
+
+# ============================================================================
+section ' 2) ONUNDE VEKIL / LOAD BALANCER VAR MI?'
+# ============================================================================
+#  DIKKAT: bu bolum TAM TARAMADAN ONCE gelmek zorunda.
+#
+#  Tavuk-yumurta sorunu: ortami analiz etmek icin GERCEK istemci adresini
+#  cozmen gerekir, cozmek icin de hangi adreslerin vekil oldugunu bilmen.
+#  Ilk surumde tam taramayi once yapiyordum ve LB'li bir logda "1 farkli IP,
+#  tek IP'nin en yuksek degeri 1080" gibi anlamsiz sonuclar cikiyordu.
+#
+#  Cozum iki gecis: once ORNEK uzerinden vekili tespit et, sonra tam taramayi
+#  o bilgiyle (gercek istemci adresleriyle) yap.
+
+probe = LogSentry::Parser.new(format: best_format)
+probe_addrs = Hash.new(0)
+probe_xff   = 0
+probe_total = 0
+
+sample_lines.each do |line|
+  e = probe.parse(line)
+  next if e.nil?
+
+  probe_total += 1
+  probe_addrs[e.ip] += 1
+  probe_xff += 1 if e.forwarded_for && !e.forwarded_for.empty? && e.forwarded_for != '-'
+end
+
+if probe_total.zero?
+  puts "\n  Hic kayit ayristirilamadi -- once format sorununu coz."
+  exit 1
+end
+
+PRIVATE_RANGES = ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '127.0.0.0/8'].freeze
+
+def private_ip?(ip)
+  addr = IPAddr.new(ip)
+  PRIVATE_RANGES.any? { |cidr| IPAddr.new(cidr).include?(addr) }
+rescue StandardError
+  false
+end
+
+probe_top     = probe_addrs.sort_by { |_ip, n| -n }.first(3)
+probe_share   = probe_addrs.values.max.to_f / probe_total * 100
+probe_distinct = probe_addrs.size
+private_share = probe_addrs.sum { |ip, n| private_ip?(ip) ? n : 0 } * 100.0 / probe_total
+
+# --------------------------------------------------------------------------
+#  TESPIT SEZGISI -- ilk surumde YANLIS POZITIF verdi, siki tutuldu.
+#
+#  Ilk denemede "en yogun uc adresten biri ozel aralikta ise LB vardir"
+#  diyordum. Bu, ic agdan gelen normal kullanicilari (10.0.0.12 gibi) LB
+#  saniyordu -- trafigin yalnizca %17'sini olusturmalarina ragmen.
+#
+#  Bir vekil, trafigin BUYUK COGUNLUGUNU tasir. Gercek imzalar sunlar:
+#    - XFF alani anlamli bir oranda dolu, YA DA
+#    - cok az sayida kaynak adres ve birinin payi ezici, YA DA
+#    - trafigin nerdeyse tamami az sayida ozel aralikli adresten geliyor
+#
+#  Kendi aracimizin yanlis pozitif vermesi, projedeki tekrar eden dersin
+#  bir baska ornegi: esikler ve sezgiler OLCULEREK ayarlanir, tahminle degil.
+# --------------------------------------------------------------------------
+lb_by_xff     = probe_xff > (probe_total * 0.05)
+lb_by_concent = probe_distinct <= 5 && probe_share > 50 && probe_total > 500
+lb_by_private = private_share > 70 && probe_distinct <= 20
+
+lb_detected = lb_by_xff || lb_by_concent || lb_by_private
+
+puts "\n  XFF alani dolu olan kayit    : #{probe_xff}  (%#{(probe_xff * 100.0 / probe_total).round(1)})"
+puts "  Farkli kaynak adres          : #{probe_distinct}"
+puts format('  En yogun adresin payi        : %%%.1f', probe_share)
+puts format('  Ozel aralikli adreslerin payi: %%%.1f', private_share)
+puts
+
+trusted = []
+
+if lb_detected
+  verdict('DIKKAT', 'VEKIL / LOAD BALANCER TESPIT EDILDI')
+  puts
+  puts '    Dayanak:'
+  puts "      - XFF alani dolu (%#{(probe_xff * 100.0 / probe_total).round(1)})" if lb_by_xff
+  puts format('      - cok az kaynak (%d) ve tek adresin payi %%%.1f', probe_distinct, probe_share) if lb_by_concent
+  puts format('      - trafigin %%%.1f\'i az sayida ozel aralikli adresten', private_share) if lb_by_private
+  puts
+  puts '    En yogun kaynak adresler (bunlar muhtemelen senin LB\'lerin):'
+  probe_top.each { |ip, n| puts format('      %-20s %8d istek (%%%.1f)', ip, n, n * 100.0 / probe_total) }
+  puts
+  puts '    Bu ortamda $remote_addr GERCEK ISTEMCI DEGIL, LB\'nin adresidir.'
+  puts '    Tum IP bazli kurallar yanlis adrese gore gruplar; alarmlar'
+  puts '    engellenecek adresi gostermez ve flood kurali surekli tetiklenir.'
+  puts
+
+  if probe_xff.zero?
+    verdict('HATA', 'XFF alani BOS. Once nginx log_format\'ina eklemelisin:')
+    puts '           \'"$http_user_agent" "$http_x_forwarded_for"\''
+  else
+    trusted = probe_top.map { |ip, _n| "#{ip}/32" }
+    verdict('OK', 'XFF alani dolu -- gercek istemci cozulebilir.')
+    puts "           Analizin geri kalani su vekilleri guvenilir sayarak yapiliyor:"
+    puts "             #{trusted.join(', ')}"
+    puts '           (Uretimde bunlari DOGRULA -- gercekten senin LB\'lerin mi?)'
+  end
+else
+  verdict('OK', 'Vekil izi yok; kaynak adresler dogrudan istemci gorunuyor.')
+end
+
+# ============================================================================
+section ' 3) TAM TARAMA'
+# ============================================================================
+
+# Vekil tespit edildiyse tam taramayi GERCEK istemci adresleriyle yapiyoruz.
+parser = LogSentry::Parser.new(format: best_format, trusted_proxies: trusted)
+
+total          = 0
+by_status      = Hash.new(0)
+remote_addrs   = Hash.new(0)
+xff_present    = 0
+failed_by_ip   = Hash.new(0)
+failed_paths   = Hash.new(0)
+login_ips      = Hash.new { |h, k| h[k] = {} }
+window_ips     = Hash.new { |h, k| h[k] = {} }
+first_time     = nil
+last_time      = nil
+dropped_ips    = 0
+
+File.foreach(log_path) do |line|
+  break if total >= options[:sample]
+
+  entry = parser.parse(line)
+  next if entry.nil?
+
+  total += 1
+  by_status[entry.status] += 1
+  first_time ||= entry.time
+  last_time = entry.time
+
+  if remote_addrs.size < MAX_TRACKED_IPS
+    remote_addrs[entry.ip] += 1
+  else
+    dropped_ips += 1
+  end
+
+  xff_present += 1 if entry.forwarded_for && !entry.forwarded_for.empty? &&
+                      entry.forwarded_for != '-'
+
+  next unless [401, 403].include?(entry.status)
+
+  failed_by_ip[entry.ip] += 1 if failed_by_ip.size < MAX_TRACKED_IPS
+  path = entry.path.to_s.downcase.split('?').first.to_s
+  failed_paths[path] += 1
+  login_ips[path][entry.ip] = true if login_ips[path].size < 50_000
+
+  # PENCERE BASINA farkli IP sayisi.
+  #
+  # Ilk surumde tum log boyunca toplam farkli IP sayiyordum ve ona gore
+  # esik oneriyordum -- ama credential_stuffing kurali 300 SANIYELIK bir
+  # PENCEREDE sayiyor. Iki saatlik bir logdaki toplam 180 IP ile ayni
+  # anda gelen 180 IP çok farkli seylerdir; yanlis birimle olcup oneri
+  # yapmak, esigi ulasilmaz yapardi.
+  bucket = entry.time.to_i / STUFFING_WINDOW
+  key = [path, bucket]
+  window_ips[key][entry.ip] = true if window_ips.size < 20_000
+end
+
+puts "\n  Ayristirilan kayit : #{total}"
+puts "  Basarisiz          : #{parser.failed_count}  (%#{(100 - parser.success_rate).round(2)})"
+puts "  Zaman araligi      : #{first_time} - #{last_time}" if first_time
+puts "  Farkli IP          : #{remote_addrs.size}#{dropped_ips.positive? ? " (+#{dropped_ips} sayilmadi)" : ''}"
+
+if total.zero?
+  puts "\n  Hic kayit ayristirilamadi -- once format sorununu coz."
+  exit 1
+end
+
+# ============================================================================
+section ' 4) WAF / RATE-LIMIT DEVREDE MI?'
+# ============================================================================
+#  "Bilmiyorum" sorusunun cevabi burada: engelleme kodlari loga dusuyorsa
+#  gorunur. Dusmuyorsa da bir sonraki bolumdeki TAVAN analizi ele verir.
+
+blocked_codes = { 403 => 'Forbidden (engelleme)', 429 => 'Too Many Requests (hiz siniri)' }
+
+puts "\n  Durum kodu dagilimi:"
+by_status.sort_by { |_c, n| -n }.first(10).each do |code, n|
+  label = blocked_codes[code] || ''
+  puts format('    %-5d %8d  %5.1f%%  %s', code, n, n * 100.0 / total, label)
+end
+puts
+
+waf_codes = blocked_codes.keys.select { |c| by_status[c].positive? }
+if waf_codes.empty?
+  verdict('BILGI', 'Engelleme kodu (403/429) hic gorulmedi.')
+  puts '           Ya WAF yok, ya da engellenen istekler web sunucusuna hic'
+  puts '           ulasmiyor (LB baglantiyi kesiyor). Ikinci durumda tespiti'
+  puts '           KARANTINA ONCESI yapmak zorundasin -- esigi dusuk tut.'
+else
+  waf_codes.each do |code|
+    verdict('BILGI', "#{code} goruluyor (#{by_status[code]} kayit) -- #{blocked_codes[code]}")
+  end
+  puts '           Bu kodlari sayan bir kural, korumaya takilan saldirganlari'
+  puts '           dogrudan gosterir.'
+end
+
+# ============================================================================
+section ' 5) ULASILABILIR ESIK -- brute_force kaca ayarlanmali?'
+# ============================================================================
+#  EN DEGERLI OLCUM.
+#
+#  Onunde karantina varsa tek bir IP belirli bir sayidan fazla deneyemez.
+#  Esigi o tavanin uzerine koyarsan kural HIC CALISMAZ -- ve "brute force
+#  korumam var" sanirsin.
+#
+#  Tavani, IP basina basarisiz giris sayilarinin dagilimindan okuyoruz.
+
+# Asagida ve 6. bolumde kullaniliyor; hic basarisiz giris yoksa da
+# tanimli olmasi gerekiyor.
+sharp_ceiling = false
+
+if failed_by_ip.empty?
+  puts "\n  Hic basarisiz giris (401/403) yok -- bu analiz yapilamiyor."
+  ceiling = nil
+else
+  counts = failed_by_ip.values.sort
+  ceiling = counts.last
+  p95 = counts[(counts.size * 0.95).floor] || ceiling
+
+  histogram = Hash.new(0)
+  counts.each { |c| histogram[c] += 1 }
+
+  puts "\n  Basarisiz giris yapan IP sayisi : #{failed_by_ip.size}"
+  puts "  Tek bir IP'nin EN YUKSEK degeri : #{ceiling}"
+  puts "  %95'lik dilim                   : #{p95}"
+  puts
+  puts '  IP basina basarisiz giris dagilimi (ilk 10):'
+  histogram.sort_by { |c, _n| c }.first(10).each do |c, n|
+    puts format('    %3d deneme yapan IP sayisi: %6d %s', c, n, '#' * [n, 40].min)
+  end
+  puts
+
+  # Keskin bir tavan var mi? (cok sayida IP tam olarak ayni sayida durmus)
+  mode_count, mode_ips = histogram.max_by { |_c, n| n }
+  sharp_ceiling = mode_count == ceiling && mode_ips > 3
+
+  if sharp_ceiling
+    verdict('DIKKAT', "KESKIN TAVAN: #{mode_ips} farkli IP tam olarak #{ceiling} denemede durmus.")
+    puts "           Bu, onunde #{ceiling} denemede kesen bir koruma oldugunu gosterir."
+  end
+
+  suggested = [[ceiling - 1, 2].max, 10].min
+  verdict('ONERI', "brute_force esigi en fazla #{ceiling - 1} olabilir; onerilen: #{suggested}")
+  puts "           (Esik #{ceiling} veya ustu olursa kural hicbir zaman tetiklenmez.)"
+end
+
+# ============================================================================
+section ' 6) GIRIS UCLARI VE DAGITIK DENEME'
+# ============================================================================
+
+if failed_paths.empty?
+  puts "\n  Basarisiz giris alan yol yok."
+  stuffing_suggestion = nil
+else
+  puts "\n  401/403 alan yollar (ilk 8):"
+  failed_paths.sort_by { |_p, n| -n }.first(8).each do |path, n|
+    ips = login_ips[path].size
+    puts format('    %-32s %6d istek  %5d farkli IP', path[0, 32], n, ips)
+  end
+
+  # ------------------------------------------------------------------------
+  #  Oneriyi PENCERE BASINA hesapliyoruz.
+  #
+  #  Kural 300 saniyelik pencerede sayiyor; iki saatlik logdaki TOPLAM
+  #  farkli IP sayisina gore esik onermek yanlis birimle olcmektir --
+  #  ilk surumde bu hatayi yapip 270 gibi ulasilmaz bir deger onermistim.
+  # ------------------------------------------------------------------------
+  per_window = Hash.new { |h, k| h[k] = [] }
+  window_ips.each { |(path, _bucket), ips| per_window[path] << ips.size }
+
+  busiest = per_window.max_by { |_p, sizes| sizes.max }
+  stuffing_suggestion = nil
+
+  puts
+  if busiest
+    path, sizes = busiest
+    sorted = sizes.sort
+    peak   = sorted.last
+    median = sorted[sorted.size / 2]
+
+    verdict('BILGI', "En yogun giris ucu: #{path}")
+    puts format('           %d saniyelik pencerede farkli IP -- tepe: %d, ortanca: %d',
+                STUFFING_WINDOW, peak, median)
+
+    # Ornek donemde saldiri var mi? Iki isaret: keskin tavan tespit edildi,
+    # ya da tepe deger ortancanin cok uzerinde.
+    attack_in_sample = sharp_ceiling || (median.positive? && peak > median * 5)
+
+    if attack_in_sample
+      # ----------------------------------------------------------------
+      #  BURADA BILINCLI OLARAK SAYI VERMIYORUZ.
+      #
+      #  Ilk iki denememde once tepe degerin, sonra ortancanin katini
+      #  onerdim. Ikisi de yanlisti: bu ornekte donemin TAMAMI saldiri,
+      #  yani ortanca da saldiri seviyesinde. Saldiri verisinden turetilen
+      #  her esik, ayni saldiriyi bir daha yakalayamayacak kadar yuksek
+      #  cikar.
+      #
+      #  Saldiri verisinden "normal" turetilemez. Guvenilir gorunen ama
+      #  yanlis bir sayi vermek, hic sayi vermemekten daha zararlidir --
+      #  cunku kullanici onu dogru sanip kullanir.
+      # ----------------------------------------------------------------
+      verdict('DIKKAT', 'ORNEK DONEMIN TAMAMI YA DA BUYUK KISMI SALDIRI GORUNUYOR.')
+      puts '           Bu veriden guvenilir bir "normal" degeri turetilemez.'
+      puts '           Ne tepe (%d) ne ortanca (%d) normal trafigi temsil ediyor.' % [peak, median]
+      puts
+      puts '           YAPILMASI GEREKEN: saldirinin olmadigi sakin bir donemin'
+      puts '           logunu bu araca ver, esigi ona gore belirle. O zamana'
+      puts '           kadar yapilandirmadaki varsayilani (25) kullan --'
+      puts '           dusuk esik yanlis pozitif uretir, ama kor kalmaktan iyidir.'
+      stuffing_suggestion = nil
+    else
+      stuffing_suggestion = [(peak * 1.5).ceil, 10].max
+      verdict('ONERI', "credential_stuffing esigi icin baslangic: #{stuffing_suggestion}")
+      puts format('           (Gozlenen tepe %d degerinin 1.5 kati.)', peak)
+      puts '           Bir hafta izleyip kendi normaline gore ayarla.'
+    end
+  end
+end
+
+# ============================================================================
+section ' 7) ROTASYON IZLERI'
+# ============================================================================
+
+dir  = File.dirname(log_path)
+base = File.basename(log_path, '.*')
+siblings = Dir.glob(File.join(dir, "#{base}*")).reject { |f| f == log_path }
+
+puts
+if siblings.empty?
+  verdict('BILGI', 'Klasorde rotasyon izi bulunamadi (ilk kurulum olabilir).')
+else
+  puts "  Ayni klasordeki ilgili dosyalar:"
+  siblings.sort.first(8).each do |f|
+    puts format('    %-46s %8.2f MB', File.basename(f), File.size(f) / 1024.0 / 1024)
+  end
+  puts
+
+  numbered = siblings.any? { |f| f =~ /\.\d+(\.gz)?\z/ }
+  dated    = siblings.any? { |f| File.basename(f) =~ /\d{4}[-_]?\d{2}[-_]?\d{2}/ }
+
+  if numbered
+    verdict('OK', 'Numarali rotasyon (access.log.1) -- logrotate create/copytruncate.')
+    puts '           Tailer her ikisini de algiliyor. copytruncate kullaniliyorsa'
+    puts '           kopyalama ile bosaltma arasinda kucuk bir veri kaybi penceresi'
+    puts '           vardir; mumkunse sunucu tarafinda "create" moduna gec.'
+  end
+  if dated
+    verdict('DIKKAT', 'TARIHLI rotasyon (access-2026-07-31.log) tespit edildi.')
+    puts '           Bu modda her gun YENI BIR DOSYA ADI olusur. Tek bir yolu'
+    puts '           izleyen bir yapilandirma ertesi gun kor kalir.'
+    puts '           Cozum: log_file olarak sabit adi (access.log) izle, ya da'
+    puts '           coklu dosya izlemeyi kullan.'
+  end
+end
+
+# ============================================================================
+section ' 8) ONERILEN YAPILANDIRMA'
+# ============================================================================
+
+puts <<~YAML
+
+  # --- bin/logsentry-doctor ciktisina gore --------------------------------
+  log_format: #{best_format}
+YAML
+
+if lb_detected
+  puts '  # LB tespit edildi -- kendi vekillerinin araliklarini DOGRULA:'
+  puts '  trusted_proxies:'
+  probe_top.each { |ip, _n| puts "    - #{ip}/32      # dogrula: bu senin LB'in mi?" }
+else
+  puts '  trusted_proxies: []'
+end
+
+puts
+puts '  rules:'
+if ceiling
+  puts '    brute_force:'
+  puts '      enabled: true'
+  puts '      window: 60'
+  puts "      threshold: #{[[ceiling - 1, 2].max, 10].min}   # olculen tavan: #{ceiling}"
+end
+if stuffing_suggestion
+  puts '    credential_stuffing:'
+  puts '      enabled: true'
+  puts '      window: 300'
+  puts "      threshold: #{stuffing_suggestion}"
+end
+
+puts <<~NOTE
+
+  ------------------------------------------------------------------------
+  NOT: Bu degerler GOZLENEN veriden turetildi, evrensel dogrular degil.
+  Ornekteki donem sakin ya da saldiri altinda olabilir. Uretime almadan
+  once en az bir hafta izleyip esikleri kendi normaline gore ayarla.
+  ------------------------------------------------------------------------
+NOTE

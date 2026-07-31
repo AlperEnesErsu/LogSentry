@@ -65,6 +65,51 @@ tarayan bir kural, user-agent'ında `union select` yazan masum bir istekte
 
 ---
 
+## Kurulumdan önce: ortamını ölç
+
+Bu projenin en pahalı dersi şuydu: kod doğruydu, testler geçiyordu, CI yeşildi —
+**ama gerçek ortamda araç hiçbir şey görmeyecekti**, çünkü orada bir load
+balancer vardı ve log formatı farklıydı.
+
+Bir güvenlik aracının en tehlikeli arızası çökmek değil, **çalışıyor görünüp
+kör kalmaktır.** Bu yüzden tahmin etmek yerine ölçen bir teşhis aracı var:
+
+```bash
+bin/logsentry-doctor /var/log/nginx/access.log
+```
+
+Gerçek log dosyana bakıp şunları **ölçer**:
+
+| Bölüm | Cevapladığı soru |
+|---|---|
+| Log formatı | Hangi format uyuyor, kaç satır eşleşmiyor? |
+| Vekil tespiti | Önünde LB var mı, hangi adresler? |
+| WAF/rate-limit | Engelleme kodları (403/429) loga düşüyor mu? |
+| **Ulaşılabilir eşik** | Tek bir IP en fazla kaç deneme yapabiliyor? |
+| Giriş uçları | Hangi yollar giriş ucu gibi davranıyor? |
+| Rotasyon | Klasörde numaralı mı tarihli mi rotasyon izi var? |
+| Öneri | Ölçülen değerlere göre hazır YAML parçası |
+
+En değerlisi **ulaşılabilir eşik** analizi. Önünde karantina varsa tek bir IP
+belirli bir sayıdan fazla deneyemez; eşiği o tavanın üstüne koyarsan kural hiç
+çalışmaz. Araç bunu dağılımdan okuyor:
+
+```
+IP başına başarısız giriş dağılımı:
+    6 deneme yapan IP sayısı:    180 ########################################
+
+[DIKKAT] KESKIN TAVAN: 180 farklı IP tam olarak 6 denemede durmuş.
+         Bu, önünde 6 denemede kesen bir koruma olduğunu gösterir.
+[ONERI]  brute_force eşiği en fazla 5 olabilir; önerilen: 5
+```
+
+Ve bilmediğinde **bilmediğini söylüyor**: örnek dönemin tamamı saldırıysa
+"normal" değeri türetilemez, o yüzden sayı uydurmak yerine sakin bir dönemin
+logunu istiyor. Güvenilir görünen yanlış bir sayı, hiç sayı vermemekten
+zararlıdır.
+
+---
+
 ## Load balancer arkasında çalıştırıyorsan — bunu okumadan kurma
 
 Sunucunun önünde bir load balancer, ters vekil veya WAF varsa **iki ayarı
@@ -438,7 +483,7 @@ lib/log_sentry/
   web/              Sinatra uygulaması, ERB şablonları, CSS/JS
 lib/log_sentry.rb   Supervisor — boru hattını birleştirir
 
-bin/                logsentry · logsentry-web · logsentry-archive
+bin/                logsentry · logsentry-web · logsentry-archive · logsentry-doctor
 config/             logsentry.yml (eşikler, saklama, web) · demo.yml
 deploy/             logsentry.service
 test/               6 paket, 181 test
