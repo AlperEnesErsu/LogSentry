@@ -3,7 +3,7 @@
 [![CI](https://github.com/AlperEnesErsu/LogSentry/actions/workflows/ci.yml/badge.svg)](https://github.com/AlperEnesErsu/LogSentry/actions/workflows/ci.yml)
 [![Ruby](https://img.shields.io/badge/ruby-%3E%3D%203.0-CC342D?logo=ruby&logoColor=white)](https://www.ruby-lang.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-218%20passing-brightgreen.svg)](#testler)
+[![Tests](https://img.shields.io/badge/tests-236%20passing-brightgreen.svg)](#testler)
 
 Web sunucusu loglarını canlı izleyen, saldırı örüntülerini tespit eden ve
 bildirim gönderen bir mini SIEM — **sıfırdan, adım adım, Ruby ile.**
@@ -107,6 +107,54 @@ Ve bilmediğinde **bilmediğini söylüyor**: örnek dönemin tamamı saldırıy
 "normal" değeri türetilemez, o yüzden sayı uydurmak yerine sakin bir dönemin
 logunu istiyor. Güvenilir görünen yanlış bir sayı, hiç sayı vermemekten
 zararlıdır.
+
+---
+
+## Allowlist — üretimde ilk gün karşına çıkar
+
+Kurumsal bir ortamda alarm üretmesi **beklenen ama zararsız** trafik her zaman
+vardır:
+
+| Kaynak | Ne yapar | Hangi kuralı tetikler |
+|---|---|---|
+| LB sağlık kontrolü | saniyede birkaç kez `/health` | `flood` |
+| İzleme sistemleri (Zabbix, Prometheus) | düzenli, yüksek hacim | `flood` |
+| Kurum içi zafiyet tarayıcısı | `/admin`, `/.env` tarar | `path_scan` + `scanner` |
+| Uptime servisleri, arama botları | düzenli istek | `flood` |
+
+Filtrelenmezse panel sürekli alarm gösterir, kimse bakmaz ve **gerçek alarm o
+gürültünün içinde kaybolur.**
+
+```yaml
+allowlist:
+  ips:
+    - 10.0.0.7          # load balancer sağlık kontrolü
+    - 10.20.30.0/24     # izleme sunucuları
+  paths:
+    - /health
+    - /metrics
+  user_agents:
+    - Zabbix
+```
+
+Üç ölçüt **VEYA** ile birleşir — herhangi biri eşleşirse kayıt muaf tutulur.
+
+**Filtrelenen şey yalnızca alarm üretimi.** Kayıtlar yine veritabanına yazılır,
+panelde aranabilir, arşivde durur. *"Görmezden gelmek"* ile *"kaydetmemek"* aynı
+şey değildir; ikincisi adli inceleme için veri kaybıdır.
+
+Bir ayrıntı: filtreleme kural çağrılmadan **önce** yapılıyor. Sağlık kontrolünü
+önce pencereye alıp sonra alarmı bastırsaydık, o kayıtlar `MAX_EVENTS_PER_KEY`
+sınırını doldurup gerçek olayları pencereden dışarı itebilirdi.
+
+> ⚠️ **Allowlist geniş tutulursa bir zafiyettir.** Saldırgan buradaki bir adresi
+> ele geçirir ya da user-agent'ı taklit ederse görünmez olur. IP aralıklarını
+> dar tut, `user_agents`'a tek başına güvenme (taklit etmek bir satır koddur),
+> ve `engine.stats` içindeki `allowlist.skipped` sayacını izle — ani artış,
+> birinin allowlist'i kalkan olarak kullandığı anlamına gelebilir.
+
+Varsayılan yapılandırmada allowlist **boştur**: muafiyet bilinçli bir karardır,
+sessiz bir varsayılan değil.
 
 ---
 
@@ -547,11 +595,12 @@ ruby test/web_test.rb
 | `parser_test.rb` | 30 | 95 |
 | `tailer_test.rb` | 15 | 24 (Win, 3 atlama) / 32 (WSL) |
 | `multi_tailer_test.rb` | 9 | 27 |
+| `allowlist_test.rb` | 18 | 78 |
 | `engine_test.rb` | 54 | 560 |
 | `daemon_test.rb` | 29 | 86 |
 | `store_test.rb` | 47 | 136 |
 | `web_test.rb` | 33 | 106 |
-| **Toplam** | **218** | **0 hata** (Windows + WSL Ubuntu 22.04 + CI: 2 OS × 3 Ruby) |
+| **Toplam** | **236** | **0 hata** (Windows + WSL Ubuntu 22.04 + CI: 2 OS × 3 Ruby) |
 
 Yalnızca `minitest` (Ruby ile birlikte gelir). Windows'ta atlanan 3 test, açık
 dosyanın taşınamamasından — `skip` ile atlanıyor, sahte geçmiyor.

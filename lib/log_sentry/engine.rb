@@ -20,6 +20,7 @@
 
 require 'yaml'
 require_relative 'entry'
+require_relative 'allowlist'
 require_relative 'rules/brute_force'
 require_relative 'rules/credential_stuffing'
 require_relative 'rules/flood'
@@ -44,12 +45,13 @@ module LogSentry
 
     DEFAULT_COOLDOWN = 120
 
-    attr_reader :rules, :processed_count, :alert_count
+    attr_reader :rules, :processed_count, :alert_count, :allowlist
 
-    def initialize(rules:)
+    def initialize(rules:, allowlist: nil)
       raise ArgumentError, 'en az bir kural gerekli' if rules.empty?
 
       @rules           = rules
+      @allowlist       = allowlist || Allowlist.new
       @processed_count = 0
       @alert_count     = 0
     end
@@ -103,7 +105,16 @@ module LogSentry
         existing || fresh
       end
 
-      new(rules: rules)
+      allow = config['allowlist'] || {}
+      allowlist = Allowlist.new(
+        ips:         allow['ips']         || [],
+        paths:       allow['paths']       || [],
+        user_agents: allow['user_agents'] || []
+      )
+
+      # Sicak yenilemede allowlist de tazeleniyor -- kural esikleri gibi,
+      # muafiyet listesi de servisi durdurmadan degistirilebilmeli.
+      new(rules: rules, allowlist: allowlist)
     end
 
     def self.build_rule(klass, opts, global_cooldown)
@@ -135,6 +146,22 @@ module LogSentry
     # ------------------------------------------------------------------------
     def process(entry)
       @processed_count += 1
+
+      # ----------------------------------------------------------------------
+      #  ALLOWLIST: bilinen ve beklenen trafik kurallara HIC girmiyor.
+      #
+      #  Dikkat: kaydin KENDISI yine de islenmis durumda (Supervisor onu
+      #  veritabanina yaziyor). Filtrelenen sey yalnizca ALARM URETIMI.
+      #  "Gormezden gelmek" ile "kaydetmemek" ayni sey degil; ikincisi
+      #  adli inceleme icin veri kaybi olurdu.
+      #
+      #  Neden kurala sokmadan once? Cunku kurallar kayan pencere tutuyor.
+      #  Saglik kontrolunu pencereye alip sonra alarmi bastirsak, o kayitlar
+      #  MAX_EVENTS_PER_KEY sinirini doldurup gercek olaylari pencereden
+      #  disari itebilirdi.
+      # ----------------------------------------------------------------------
+      return [] if @allowlist.allowed?(entry)
+
       alerts = @rules.filter_map { |rule| rule.call(entry) }
       @alert_count += alerts.size
       alerts
@@ -154,6 +181,10 @@ module LogSentry
       {
         processed: @processed_count,
         alerts:    @alert_count,
+        # Filtrelenen kayit sayisini IZLEMEK onemli: aniden artiyorsa ya
+        # allowlist fazla genis, ya da birileri onu kalkan olarak
+        # kullaniyor olabilir.
+        allowlist: @allowlist.stats,
         rules:     @rules.map(&:stats)
       }
     end

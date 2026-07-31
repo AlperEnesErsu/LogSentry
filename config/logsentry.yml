@@ -149,6 +149,49 @@ rules:
     window: 60
     threshold: 0
 
+# --- Allowlist: alarm uretmesi BEKLENEN ama zararsiz trafik ----------------
+#  Kurumsal ortamda her zaman vardir:
+#    - LB'nin saglik kontrolu (saniyede birkac kez /health) -> flood tetikler
+#    - Izleme sistemleri (Zabbix, Prometheus blackbox)      -> flood tetikler
+#    - Kurum ici zafiyet tarayicilari                       -> path_scan +
+#      scanner kurallarini KASTEN tetikler (planli tarama, saldiri degil)
+#
+#  Filtrelenmezse panel surekli alarm gosterir, kimse bakmaz, ve GERCEK
+#  alarm o gurultunun icinde kaybolur.
+#
+#  ONEMLI: burada filtrelenen sey yalnizca ALARM URETIMI. Kayitlar yine
+#  veritabanina yazilir, panelde aranabilir, arsivde durur. "Gormezden
+#  gelmek" ile "kaydetmemek" ayni sey degildir.
+#
+#  GUVENLIK: allowlist genis tutulursa bir ZAFIYETTIR. Saldirgan buradaki
+#  bir adresi ele gecirir ya da user-agent'i taklit ederse gorunmez olur.
+#    - IP araliklarini DAR tut (tek adres ya da kucuk CIDR)
+#    - user_agents'a guvenme: taklit etmek bir satir koddur
+#    - engine.stats icindeki allowlist.skipped sayisini izle
+allowlist:
+  ips: []
+  # Ornek:
+  # ips:
+  #   - 10.0.0.7          # load balancer saglik kontrolu
+  #   - 10.20.30.0/24     # izleme sunuculari
+  #   - 10.50.0.9         # kurum ici zafiyet tarayicisi
+
+  paths: []
+  # Ornek:
+  # paths:
+  #   - /health
+  #   - /healthz
+  #   - /metrics
+  #   - /ping
+
+  user_agents: []
+  # Ornek (yalnizca gurultu azaltmak icin; tek basina GUVENLIK OLCUTU DEGIL):
+  # user_agents:
+  #   - Zabbix
+  #   - Prometheus
+  #   - Pingdom
+  #   - ELB-HealthChecker
+
 # --- Bildirim kanallari ----------------------------------------------------
 notifiers:
   console:
