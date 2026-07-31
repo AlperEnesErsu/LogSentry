@@ -10,8 +10,29 @@
 #  Kurumsal sistemlerde kural esikleri HER ZAMAN kodun disindadir.
 # ============================================================================
 
-# Izlenecek log dosyasi
+# Izlenecek log dosyasi (tek dosya)
 log_file: logs/access.log
+
+# --- Coklu dosya izleme ----------------------------------------------------
+#  log_files tanimlanirsa log_file yerine BU kullanilir ve kalibla eslesen
+#  TUM dosyalar ayni anda izlenir. Iki gercek ihtiyaci karsilar:
+#
+#  1) TARIHLI ROTASYON
+#     Bazi kurulumlar her gun yeni bir dosya ADI uretir:
+#         access-2026-07-31.log -> access-2026-08-01.log
+#     Tek bir yolu izleyen yapilandirma gece yarisindan sonra SESSIZCE kor
+#     kalir: dosya duruyor, Tailer calisiyor, hata yok -- ama yeni satirlar
+#     baska bir dosyaya gidiyor. Kalip izlemek bunu cozer.
+#     (Numarali rotasyonda -- access.log.1 -- bu sorun yoktur.)
+#
+#  2) COK SUNUCULU / COK SITELI KURULUM
+#     /var/log/nginx/*/access.log
+#
+#  Yeni ortaya cikan dosyalar HER ZAMAN bastan okunur; aksi halde gece
+#  yarisi ile kesif ani arasindaki satirlar kaybolurdu.
+#
+# log_files: logs/access*.log
+# log_files: /var/log/nginx/*/access.log
 
 # --- Log formati -----------------------------------------------------------
 #  combined      : standart Nginx/Apache formati (dogrudan internete acik

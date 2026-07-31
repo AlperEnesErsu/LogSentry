@@ -66,6 +66,9 @@ module LogSentry
     :referer,     # String  -> "-"          (nil olabilir)
     :user_agent,  # String  -> "python-requests/2.31.0"
     :raw,         # String  -> satirin dokunulmamis hali (KANIT)
+    # Kaydin hangi dosyadan/sunucudan geldigi. Cok sunuculu kurulumlarda
+    # "hangi makinede oldu" sorusunun cevabi; tek dosya izlenirken nil.
+    :source,
     keyword_init: true
   ) do
     # ------------------------------------------------------------------------

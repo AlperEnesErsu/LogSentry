@@ -3,7 +3,7 @@
 [![CI](https://github.com/AlperEnesErsu/LogSentry/actions/workflows/ci.yml/badge.svg)](https://github.com/AlperEnesErsu/LogSentry/actions/workflows/ci.yml)
 [![Ruby](https://img.shields.io/badge/ruby-%3E%3D%203.0-CC342D?logo=ruby&logoColor=white)](https://www.ruby-lang.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-209%20passing-brightgreen.svg)](#testler)
+[![Tests](https://img.shields.io/badge/tests-218%20passing-brightgreen.svg)](#testler)
 
 Web sunucusu loglarını canlı izleyen, saldırı örüntülerini tespit eden ve
 bildirim gönderen bir mini SIEM — **sıfırdan, adım adım, Ruby ile.**
@@ -170,7 +170,40 @@ sayacı **5'i asla geçemez**. Eşiği 10 bırakırsan `brute_force` kuralı hi�
 
 Varsayılanı bu yüzden `4` yaptık.
 
-### 4. Saldırının şekli değişir
+### 4. Rotasyon tipini kontrol et
+
+`bin/logsentry-doctor` klasördeki dosya adlarına bakıp rotasyon tipini söyler.
+İki tip var ve **biri sessiz körlük üretir**:
+
+| Tip | Örnek | Durum |
+|---|---|---|
+| Numaralı | `access.log` → `access.log.1` | ✅ Tailer inode değişimini algılar |
+| **Tarihli** | `access-2026-07-31.log` → `access-2026-08-01.log` | ⚠️ tek yol izleyen yapılandırma **gece yarısı kör kalır** |
+
+Tarihli rotasyonda dosya duruyor, Tailer çalışıyor, hata yok — ama yeni satırlar
+başka bir dosyaya yazılıyor. Çözüm: sabit yol yerine **kalıp** izlemek.
+
+```yaml
+# log_file yerine:
+log_files: /var/log/nginx/access-*.log
+```
+
+Aynı ayar **çok sunuculu** kurulumu da çözüyor:
+
+```yaml
+log_files: /var/log/nginx/*/access.log
+```
+
+Kalıpla eşleşen her dosya ayrı bir `Tailer` ile izleniyor, yeni dosyalar
+çalışma sırasında keşfediliyor ve **her zaman baştan** okunuyor (aksi halde
+gece yarısı ile keşif anı arasındaki satırlar kaybolurdu). Her kaydın hangi
+dosyadan geldiği `Entry#source` alanında taşınıyor.
+
+Kaynak yönetimi de sınırlı: en fazla 50 dosya aynı anda, 10 dakikadır yeni
+satır gelmeyen ve en yeni olmayan dosyalar bırakılıyor — aksi halde tarihli
+rotasyonda 90 gün sonra 90 boş thread çalışır durumda olurdu.
+
+### 5. Saldırının şekli değişir
 
 Karantina saldırıyı engellemez, **biçimini değiştirir**. Tek IP'den 1000 deneme
 yapamayan saldırgan, 3000 farklı IP'den 3'er deneme yapar — ve IP başına sayan
@@ -513,18 +546,20 @@ ruby test/web_test.rb
 |---|---|---|
 | `parser_test.rb` | 30 | 95 |
 | `tailer_test.rb` | 15 | 24 (Win, 3 atlama) / 32 (WSL) |
+| `multi_tailer_test.rb` | 9 | 27 |
 | `engine_test.rb` | 54 | 560 |
 | `daemon_test.rb` | 29 | 86 |
 | `store_test.rb` | 47 | 136 |
 | `web_test.rb` | 33 | 106 |
-| **Toplam** | **209** | **0 hata** (Windows + WSL Ubuntu 22.04 + CI: 2 OS × 3 Ruby) |
+| **Toplam** | **218** | **0 hata** (Windows + WSL Ubuntu 22.04 + CI: 2 OS × 3 Ruby) |
 
 Yalnızca `minitest` (Ruby ile birlikte gelir). Windows'ta atlanan 3 test, açık
 dosyanın taşınamamasından — `skip` ile atlanıyor, sahte geçmiyor.
 
 Testler kasten **hızlı ve saf**: zaman uydurulmuş (`sleep 61` yok), veritabanı
-`:memory:`, gerçek HTTP isteği ve gerçek daemon yok. 209 test saniyeler içinde
-koşuyor.
+`:memory:`, gerçek HTTP isteği ve gerçek daemon yok. Tek istisna Tailer ve
+MultiTailer testleri: dosya rotasyonu ve keşif taklit edilemez, gerçek dosya
+sistemiyle ölçülür.
 
 Her push'ta GitHub Actions üzerinde **Ubuntu ve Windows × Ruby 3.2 / 3.3 / 3.4**
 matrisinde yeniden koşuyor — yani kod, temiz bir makinede sıfırdan kurulumla da

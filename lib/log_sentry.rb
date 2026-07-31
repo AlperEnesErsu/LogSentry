@@ -51,7 +51,13 @@ module LogSentry
       @quiet       = quiet
       @once        = once
 
-      @log_path = File.expand_path(log_file || config.fetch('log_file'))
+      # log_files (kalip) verilmisse log_file zorunlu degil.
+      configured_path = log_file || config['log_file']
+      if configured_path.nil? && config['log_files'].nil?
+        raise KeyError, 'yapilandirmada log_file ya da log_files bulunmali'
+      end
+
+      @log_path = configured_path && File.expand_path(configured_path)
 
       # Parser artik yapilandirmadan kuruluyor: LB arkasindaki kurulumlarda
       # hem log formati hem de gercek istemci adresinin nasil bulunacagi
@@ -71,11 +77,32 @@ module LogSentry
       @notifiers = build_notifiers(config)
       @last_flush = Time.now
 
-      @tailer = Tailer.new(
-        @log_path,
-        start: from_begin ? :begin : :end,
-        state_file: config.dig('daemon', 'state_file')
-      )
+      # ----------------------------------------------------------------------
+      #  TEK DOSYA MI, KALIP MI?
+      # ----------------------------------------------------------------------
+      #  log_file  : tek bir yol      -> Tailer
+      #  log_files : glob kalibi      -> MultiTailer
+      #
+      #  Kalip, iki gercek ihtiyaci karsiliyor: tarihli rotasyon (her gun
+      #  yeni dosya adi) ve cok sunuculu kurulum (birden fazla dosya).
+      # ----------------------------------------------------------------------
+      @log_pattern = config['log_files']
+
+      @tailer =
+        if @log_pattern
+          require_relative 'log_sentry/multi_tailer'
+          MultiTailer.new(
+            @log_pattern,
+            start: from_begin ? :begin : :end,
+            state_dir: config.dig('daemon', 'state_dir') || 'logs/.state'
+          )
+        else
+          Tailer.new(
+            @log_path,
+            start: from_begin ? :begin : :end,
+            state_file: config.dig('daemon', 'state_file')
+          )
+        end
 
       @running          = false
       @reload_requested = false
@@ -126,7 +153,7 @@ module LogSentry
 
       install_signal_handlers
       log "LogSentry v#{VERSION} basladi (PID #{Process.pid})"
-      log "izlenen dosya : #{@log_path}"
+      log(@log_pattern ? "izlenen kalip : #{@log_pattern}" : "izlenen dosya : #{@log_path}")
       log "kurallar      : #{@engine.rules.map(&:name).join(', ')}"
       log "bildirim      : #{@notifiers.map(&:name).join(', ')}"
 
@@ -136,7 +163,11 @@ module LogSentry
         # Bir izleme aracinda bundan daha sinsi bir arizanin olmasi zor.
         # Bu yuzden thread govdesini acikca sariyoruz.
         begin
-          @tailer.each_line { |line| handle_line(line) }
+          # MultiTailer bloga iki deger verir (satir, kaynak); Tailer bir
+          # tane. Ruby'de blok parametreleri esnektir: |line, source| yazip
+          # tek deger gelirse source nil olur -- yani ayni blok ikisiyle de
+          # calisir, ek bir kosula gerek kalmaz.
+          @tailer.each_line { |line, source| handle_line(line, source) }
         rescue StandardError => e
           log "OKUMA THREAD'I COKTU: #{e.class}: #{e.message}"
           e.backtrace&.first(5)&.each { |l| log "  #{l}" }
@@ -217,11 +248,13 @@ module LogSentry
     # ------------------------------------------------------------------------
     #  BORU HATTININ TAMAMI -- dort satir
     # ------------------------------------------------------------------------
-    def handle_line(line)
+    def handle_line(line, source = nil)
       @last_line_at = Time.now         # --once modunun bosta kalma olcumu
 
       entry = @parser.parse(line)      # 1) metin -> veri
       return if entry.nil?             #    anlasilmayan satiri gec
+
+      entry.source = source            #    hangi dosyadan/sunucudan geldi
 
       @store&.record_event(entry)      # 2) kaydet (tamponlanir)
 

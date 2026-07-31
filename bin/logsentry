@@ -166,7 +166,14 @@ when :status
 when :check
   begin
     engine    = LogSentry::Engine.from_config(config)
-    watched   = File.expand_path(options[:log_file] || config.fetch('log_file'))
+    # log_files (glob kalibi) tanimliysa tek bir yol yerine kalip izlenir.
+    pattern = config['log_files']
+    watched = if pattern && options[:log_file].nil?
+                matches = Dir.glob(pattern)
+                "#{pattern}  (#{matches.size} dosya eslesiyor)"
+              else
+                File.expand_path(options[:log_file] || config.fetch('log_file'))
+              end
 
     puts "yapilandirma : #{options[:config]}"
     puts 'YAML         : gecerli'
@@ -176,8 +183,13 @@ when :check
                   r.name, r.threshold, r.window, r.cooldown)
     end
 
-    puts "izlenen dosya: #{watched} " \
-         "(#{File.exist?(watched) ? 'var' : 'YOK -- olusana kadar beklenir'})"
+    if pattern && options[:log_file].nil?
+      puts "izlenen kalip: #{watched}"
+      Dir.glob(pattern).sort.first(5).each { |f| puts "               #{f}" }
+    else
+      puts "izlenen dosya: #{watched} " \
+           "(#{File.exist?(watched) ? 'var' : 'YOK -- olusana kadar beklenir'})"
+    end
 
     notifiers = (config['notifiers'] || {}).select { |_k, v| v.is_a?(Hash) && v['enabled'] }
     puts "bildirim     : #{notifiers.keys.join(', ')}"
