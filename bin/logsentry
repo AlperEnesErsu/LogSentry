@@ -61,6 +61,7 @@ OptionParser.new do |o|
   o.on('--reload',  'yapilandirmayi yenile (SIGHUP)')  { options[:action] = :reload }
   o.on('--status',  'durum bilgisi')                   { options[:action] = :status }
   o.on('--check',   'yapilandirmayi dogrula ve cik')   { options[:action] = :check }
+  o.on('--replay PATH', 'gecmis logu veritabanina yazmadan simule et') { |v| options[:action] = :replay; options[:replay_file] = File.expand_path(v) }
 
   o.on('-v', '--version', 'surum') do
     puts "LogSentry v#{LogSentry::VERSION}"
@@ -166,7 +167,6 @@ when :status
 when :check
   begin
     engine    = LogSentry::Engine.from_config(config)
-    # log_files (glob kalibi) tanimliysa tek bir yol yerine kalip izlenir.
     pattern = config['log_files']
     watched = if pattern && options[:log_file].nil?
                 matches = Dir.glob(pattern)
@@ -206,6 +206,33 @@ when :check
   rescue StandardError => e
     abort "YAPILANDIRMA HATASI: #{e.class}: #{e.message}"
   end
+
+when :replay
+  puts '=== LOGSENTRY SIMULASYON / REPLAY MODU ==='
+  puts "replay dosyasi: #{options[:replay_file]}"
+  unless File.exist?(options[:replay_file].to_s)
+    abort "HATA: replay dosyasi bulunamadi: #{options[:replay_file]}"
+  end
+
+  engine = LogSentry::Engine.from_config(options[:config])
+  parser_format = (config.dig('parser', 'format') || :combined).to_sym
+  parser = LogSentry::Parser.new(format: parser_format)
+  alerts_count = 0
+
+  File.foreach(options[:replay_file]) do |line|
+    entry = parser.parse(line)
+    next unless entry
+
+    alerts = engine.process(entry)
+    alerts.each do |alert|
+      alerts_count += 1
+      puts "[REPLAY ALARM] [#{alert.rule.to_s.upcase}] [#{alert.severity.to_s.upcase}] IP: #{alert.ip} - #{alert.message}"
+    end
+  end
+
+  puts '=========================================='
+  puts "Simulasyon Tamamlandi: #{alerts_count} alarm uretildi."
+  exit 0
 
 # --- Calistir --------------------------------------------------------------
 else
