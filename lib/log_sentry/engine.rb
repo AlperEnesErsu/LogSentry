@@ -28,19 +28,19 @@ require_relative 'rules/path_scan'
 require_relative 'rules/sqli'
 require_relative 'rules/xss'
 require_relative 'rules/scanner'
+require_relative 'rules/threat_intel'
 
 module LogSentry
   class Engine
-    # Yapilandirma dosyasindaki isimleri sinif'lara baglayan tablo.
-    # Yeni bir kural eklemek = yeni bir dosya + buraya bir satir.
     RULE_CLASSES = {
-      'brute_force' => Rules::BruteForce,
+      'brute_force'         => Rules::BruteForce,
       'credential_stuffing' => Rules::CredentialStuffing,
-      'flood'       => Rules::Flood,
-      'path_scan'   => Rules::PathScan,
-      'sqli'        => Rules::Sqli,
-      'xss'         => Rules::Xss,
-      'scanner'     => Rules::Scanner
+      'flood'               => Rules::Flood,
+      'path_scan'           => Rules::PathScan,
+      'sqli'                => Rules::Sqli,
+      'xss'                 => Rules::Xss,
+      'scanner'             => Rules::Scanner,
+      'threat_intel'        => Rules::ThreatIntel
     }.freeze
 
     DEFAULT_COOLDOWN = 120
