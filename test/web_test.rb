@@ -46,8 +46,10 @@ class WebTest < Minitest::Test
     app.set :alert_file,   @alert_file
     app.set :read_only,    true
     app.set :page_size,    10
-    app.set :auth_enabled, false
-    app.set :auth_pass,    nil
+    app.set :auth_enabled,       false
+    app.set :auth_pass,          nil
+    app.set :rate_limit_enabled, false
+    LogSentry::Web::App::RATE_LIMIT_STORE.clear
 
     @request = Rack::MockRequest.new(app)
   end
@@ -481,5 +483,20 @@ class WebTest < Minitest::Test
   ensure
     LogSentry::Web::App.set :auth_enabled, false
     LogSentry::Web::App.set :auth_pass, nil
+  end
+
+  def test_rate_limiter_esik_asilinca_429_doner
+    LogSentry::Web::App.set :rate_limit_enabled, true
+    LogSentry::Web::App.set :rate_limit_max, 2
+    LogSentry::Web::App.set :rate_limit_window, 60
+    LogSentry::Web::App::RATE_LIMIT_STORE.clear
+
+    assert_equal 200, get('/').status
+    assert_equal 200, get('/').status
+    res = get('/')
+    assert_equal 429, res.status
+  ensure
+    LogSentry::Web::App.set :rate_limit_enabled, false
+    LogSentry::Web::App::RATE_LIMIT_STORE.clear
   end
 end
