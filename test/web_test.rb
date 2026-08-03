@@ -499,4 +499,12 @@ class WebTest < Minitest::Test
     LogSentry::Web::App.set :rate_limit_enabled, false
     LogSentry::Web::App::RATE_LIMIT_STORE.clear
   end
+
+  def test_prometheus_metrics_endpoint
+    res = get('/metrics')
+    assert_equal 200, res.status
+    assert_includes res.body, 'logsentry_up 1'
+    assert_includes res.body, 'logsentry_alerts_total'
+    assert_includes res.body, 'logsentry_events_total'
+  end
 end

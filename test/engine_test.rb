@@ -528,6 +528,16 @@ class EngineTest < Minitest::Test
     assert_equal '192.168.1.0/24', alert.details[:subnet]
   end
 
+  def test_threat_intel_kurali_kara_listeyi_yakalar
+    rule = LogSentry::Rules::ThreatIntel.new(window: 60, threshold: 0)
+    bad_entry = entry(ip: '45.155.205.233')
+
+    alert = rule.call(bad_entry)
+    refute_nil alert
+    assert_equal :threat_intel, alert.rule
+    assert_equal :critical, alert.severity
+  end
+
   # --------------------------------------------------------------------------
   #  SOZLESME
   # --------------------------------------------------------------------------

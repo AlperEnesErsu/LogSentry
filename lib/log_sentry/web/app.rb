@@ -173,6 +173,32 @@ module LogSentry
       end
 
       # ======================================================================
+      #  PROMETHEUS METRICS ENDPOINT
+      # ======================================================================
+      get '/metrics' do
+        content_type 'text/plain; version=0.0.4'
+        if store.nil?
+          halt 503, "# HELP logsentry_up Service status\n# TYPE logsentry_up gauge\nlogsentry_up 0\n"
+        end
+
+        stats = (store.stats rescue {})
+        alert_count = (store.alerts(limit: 1000).size rescue 0)
+
+        metrics = []
+        metrics << "# HELP logsentry_up LogSentry service status"
+        metrics << "# TYPE logsentry_up gauge"
+        metrics << "logsentry_up 1"
+        metrics << "# HELP logsentry_alerts_total Total detected security alerts"
+        metrics << "# TYPE logsentry_alerts_total counter"
+        metrics << "logsentry_alerts_total #{alert_count}"
+        metrics << "# HELP logsentry_events_total Total stored events"
+        metrics << "# TYPE logsentry_events_total counter"
+        metrics << "logsentry_events_total #{stats[:events_count] || 0}"
+
+        metrics.join("\n") + "\n"
+      end
+
+      # ======================================================================
       #  DASHBOARD
       # ======================================================================
       get '/' do
