@@ -51,14 +51,15 @@ module LogSentry
       HOUSEKEEPING_INTERVAL = 30
 
       attr_reader :name, :window, :threshold, :cooldown, :severity,
-                  :evaluated_count, :alert_count
+                  :group_by_subnet, :evaluated_count, :alert_count
 
-      def initialize(window:, threshold:, cooldown: 120, severity: :medium, **_extra)
-        @window    = window      # saniye
-        @threshold = threshold   # bu sayiyi ASARSA alarm
-        @cooldown  = cooldown    # ayni anahtar icin susma suresi
-        @severity  = severity
-        @name      = self.class.rule_name
+      def initialize(window:, threshold:, cooldown: 120, severity: :medium, group_by_subnet: false, **_extra)
+        @window          = window      # saniye
+        @threshold       = threshold   # bu sayiyi ASARSA alarm
+        @cooldown        = cooldown    # ayni anahtar icin susma suresi
+        @severity        = severity
+        @group_by_subnet = group_by_subnet
+        @name            = self.class.rule_name
 
         # Kayan pencereler: { "ip" => [[zaman, deger], ...] }
         @events = {}
@@ -169,7 +170,7 @@ module LogSentry
       #  ayarlari varsa extra_signature'i ezer.
       # ======================================================================
       def signature
-        [@name, @window, @threshold, @cooldown, @severity, extra_signature]
+        [@name, @window, @threshold, @cooldown, @severity, @group_by_subnet, extra_signature]
       end
 
       # Kurala ozel ayarlar. Varsayilan: yok.
@@ -210,11 +211,24 @@ module LogSentry
         (@events[key] || []).size
       end
 
-      # Olaylari hangi anahtar altinda gruplayacagiz? Varsayilan: IP.
-      # (Ileride "kullanici adi basina" bir kural yazmak isterseniz burasi
-      #  degisir, geri kalan hicbir sey degismez.)
+      # Olaylari hangi anahtar altinda gruplayacagiz? Varsayilan: IP veya Subnet.
       def key_for(entry)
+        return subnet_key(entry.ip) if @group_by_subnet
+
         entry.ip
+      end
+
+      def subnet_key(ip_str)
+        ip = IPAddr.new(ip_str)
+        if ip.ipv4?
+          "#{ip.mask(24)}/24"
+        elsif ip.ipv6?
+          "#{ip.mask(64)}/64"
+        else
+          ip_str
+        end
+      rescue IPAddr::InvalidAddressError, ArgumentError
+        ip_str
       end
 
       # Pencereye hangi degeri yazacagiz? Varsayilan: hicbir sey (sadece
@@ -427,21 +441,21 @@ module LogSentry
       end
 
       def build_alert(entry, measured)
+        key = key_for(entry)
+        details = (details_for(entry, measured) || {}).dup
+        details[:subnet] = key if @group_by_subnet
+
         Alert.new(
           rule:      @name,
           severity:  @severity,
-          ip:        entry.ip,
+          ip:        @group_by_subnet ? key : entry.ip,
           message:   message_for(entry, measured),
           time:      entry.time,
           count:     measured,
           threshold: @threshold,
           window:    @window,
-          details:   details_for(entry, measured),
-          # dup: kanit dizisinin O ANKI kopyasini aliyoruz.
-          # Kopyalamazsak alarm, canli degisen diziye referans tutar ve
-          # 10 dakika sonra baktiginda icinde bambaska satirlar bulursun.
-          # Kanit, uretildigi andaki halini KORUMAK zorundadir.
-          evidence:  (@evidence[key_for(entry)] || []).dup
+          details:   details,
+          evidence:  (@evidence[key] || []).dup
         )
       end
     end

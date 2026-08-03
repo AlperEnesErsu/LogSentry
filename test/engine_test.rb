@@ -516,6 +516,18 @@ class EngineTest < Minitest::Test
     assert_equal :medium, alert.severity
   end
 
+  def test_group_by_subnet_dagitik_saldiriyi_alt_agda_yakalar
+    rule = LogSentry::Rules::BruteForce.new(window: 60, threshold: 2, group_by_subnet: true)
+
+    rule.call(entry(ip: '192.168.1.10', status: 401, at: T0))
+    rule.call(entry(ip: '192.168.1.20', status: 401, at: T0 + 1))
+    alert = rule.call(entry(ip: '192.168.1.30', status: 401, at: T0 + 2))
+
+    refute_nil alert
+    assert_equal '192.168.1.0/24', alert.ip
+    assert_equal '192.168.1.0/24', alert.details[:subnet]
+  end
+
   # --------------------------------------------------------------------------
   #  SOZLESME
   # --------------------------------------------------------------------------

@@ -125,9 +125,10 @@ module LogSentry
       }
 
       # Kurala ozel, istege bagli ayarlar.
-      kwargs[:statuses] = opts['statuses']          if opts['statuses']
-      kwargs[:paths]    = opts['paths']             if opts['paths']
-      kwargs[:severity] = opts['severity'].to_sym   if opts['severity']
+      kwargs[:statuses]        = opts['statuses']          if opts['statuses']
+      kwargs[:paths]           = opts['paths']             if opts['paths']
+      kwargs[:severity]        = opts['severity'].to_sym   if opts['severity']
+      kwargs[:group_by_subnet] = opts['group_by_subnet'] if opts.key?('group_by_subnet')
 
       klass.new(**kwargs)
     end
