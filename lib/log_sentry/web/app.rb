@@ -37,6 +37,7 @@ module LogSentry
       set :store,      nil
       set :archiver,   nil
       set :alert_file, nil
+      set :read_only,  true
       set :show_exceptions, false
       set :raise_errors,    false
       set :auth_enabled, false
@@ -79,7 +80,7 @@ module LogSentry
           end
         end
 
-        if settings.read_only && !%w[GET HEAD].include?(request.request_method)
+        if settings.read_only && !%w[GET HEAD].include?(request.request_method) && request.path_info != '/webhooks/github'
           halt 405, { 'Content-Type' => 'text/plain' },
                "405 -- bu arayuz salt okunurdur\n"
         end
@@ -196,6 +197,45 @@ module LogSentry
         metrics << "logsentry_events_total #{stats[:events_count] || 0}"
 
         metrics.join("\n") + "\n"
+      end
+
+      # ======================================================================
+      #  GITHUB WEBHOOK RECEIVER
+      # ======================================================================
+      post '/webhooks/github' do
+        content_type :json
+        payload_body = request.body.read
+        secret = ENV['LOGSENTRY_GITHUB_WEBHOOK_SECRET']
+
+        if secret && !secret.empty?
+          signature = 'sha256=' + OpenSSL::HMAC.hexdigest(OpenSSL::Digest.new('sha256'), secret, payload_body)
+          header_sig = request.env['HTTP_X_HUB_SIGNATURE_256']
+          unless header_sig && Rack::Utils.secure_compare(signature, header_sig)
+            halt 401, JSON.generate(error: 'Invalid HMAC signature')
+          end
+        end
+
+        event_type = request.env['HTTP_X_GITHUB_EVENT'] || 'ping'
+        payload = (JSON.parse(payload_body) rescue {})
+
+        actor = payload.dig('sender', 'login') || 'github-webhook'
+        repo  = payload.dig('repository', 'full_name') || 'unknown/repo'
+
+        entry = LogSentry::Entry.new(
+          ip: request.ip,
+          time: Time.now,
+          http_method: 'POST',
+          path: "/webhooks/github/#{event_type}",
+          protocol: 'HTTP/1.1',
+          status: 200,
+          bytes: payload_body.bytesize,
+          referer: "https://github.com/#{repo}",
+          user_agent: "GitHub-Hookshot (#{actor})"
+        )
+
+        store&.append_event(entry)
+
+        JSON.generate(status: 'ok', event: event_type, repo: repo)
       end
 
       # ======================================================================

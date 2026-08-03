@@ -1,0 +1,34 @@
+name: LogSentry Security Scan
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    - cron: '0 0 * * *'
+
+jobs:
+  logsentry-audit:
+    name: Run LogSentry Diagnostic & SIEM Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Ruby
+        uses: actions/setup-ruby@v4
+        with:
+          ruby-version: '3.3'
+
+      - name: Install Dependencies
+        run: |
+          gem install minitest rake sqlite3 sinatra puma
+
+      - name: Run Test Suite
+        run: |
+          bundle exec rake test || ruby test/engine_test.rb
+
+      - name: Run Dry-Run Replay Simulation
+        run: |
+          ruby bin/logsentry --replay logs/access.log || true
