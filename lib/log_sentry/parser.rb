@@ -178,13 +178,15 @@ module LogSentry
     #   Bos birakilirsa XFF zinciri KULLANILMAZ (guvenli varsayilan --
     #   sebebi asagida, resolve_client_ip).
     def initialize(format: :combined, keep_raw: true, trusted_proxies: [])
+      @format          = format.to_sym
       @trusted_proxies = build_trusted_proxies(trusted_proxies)
-      @pattern = FORMATS.fetch(format) do
-        # fetch'e blok verirsen, anahtar yoksa blok calisir.
-        # Sessizce nil donmek yerine ANLASILIR bir hata firlatiyoruz:
-        # yapilandirma hatasi, calisma aninda degil BASLANGICTA patlamalidir.
-        raise ArgumentError, "bilinmeyen format: #{format.inspect} " \
-                             "(gecerli: #{FORMATS.keys.join(', ')})"
+      if @format == :json
+        @pattern = :json
+      else
+        @pattern = FORMATS.fetch(@format) do
+          raise ArgumentError, "bilinmeyen format: #{format.inspect} " \
+                               "(gecerli: #{FORMATS.keys.join(', ')})"
+        end
       end
       @keep_raw       = keep_raw
       @parsed_count   = 0
@@ -229,6 +231,8 @@ module LogSentry
       #  kontrolu yap, pahali olani sadece gerektiginde yap.
       # ----------------------------------------------------------------------
       line = line.scrub('?') unless line.valid_encoding?
+
+      return parse_json_line(line) if @format == :json || line.start_with?('{')
 
       # match: kalip uyuyorsa MatchData nesnesi, uymuyorsa nil doner.
       match = @pattern.match(line)
@@ -445,13 +449,75 @@ module LogSentry
 
     def record_failure(line, reason)
       @failed_count += 1
-      # Sadece ilk 10 hatayi sakliyoruz.
-      # Neden sinir? Cunku milyonlarca bozuk satir gelirse bu dizi tum
-      # RAM'i yer -- Adim 1'deki File.read hatasinin bir baska kiligi.
-      # Sinirsiz buyuyen HICBIR yapiya bir daemon icinde yer yoktur.
       return if @failed_samples.size >= 10
 
       @failed_samples << { line: line, reason: reason }
+    end
+
+    def parse_json_line(line)
+      hash = JSON.parse(line)
+      return record_failure(line, 'gecersiz JSON yapisi') unless hash.is_a?(Hash)
+
+      remote_addr   = hash['ip'] || hash['remote_addr'] || hash['client_ip'] || hash.dig('client', 'ip')
+      forwarded_for = hash['forwarded_for'] || hash['x_forwarded_for'] || hash['http_x_forwarded_for']
+      client_ip     = resolve_client_ip(remote_addr, forwarded_for)
+
+      time_val = hash['time'] || hash['timestamp'] || hash['time_local'] || hash['@timestamp']
+      time     = parse_json_time(time_val)
+      unless client_ip && time
+        record_failure(line, 'JSON icinde IP veya zaman eksik')
+        return nil
+      end
+
+      req = hash['request']
+      if req
+        parsed_req  = parse_request(req)
+        http_method = parsed_req[:http_method]
+        path        = parsed_req[:path]
+        protocol    = parsed_req[:protocol]
+      else
+        http_method = hash['method'] || hash['http_method'] || '-'
+        path        = hash['path'] || hash['uri'] || '-'
+        protocol    = hash['protocol']
+      end
+
+      status  = (hash['status'] || hash['status_code'] || 200).to_i
+      bytes   = (hash['bytes'] || hash['body_bytes_sent'] || hash['size'] || 0).to_i
+      referer = hash['referer'] || hash['http_referer']
+      agent   = hash['user_agent'] || hash['http_user_agent'] || hash['agent']
+
+      @parsed_count += 1
+
+      Entry.new(
+        ip:            client_ip,
+        proxy_ip:      (remote_addr unless client_ip == remote_addr),
+        forwarded_for: forwarded_for,
+        time:          time,
+        http_method:   http_method,
+        path:          path,
+        protocol:      protocol,
+        status:        status,
+        bytes:         bytes,
+        referer:       referer,
+        user_agent:    agent,
+        raw:           @keep_raw ? line : nil
+      )
+    rescue JSON::ParserError
+      record_failure(line, 'gecersiz JSON formati')
+      nil
+    end
+
+    def parse_json_time(val)
+      return nil if val.nil?
+      return val if val.is_a?(Time)
+      return Time.at(val) if val.is_a?(Numeric)
+
+      str = val.to_s.strip
+      return nil if str.empty?
+
+      Time.iso8601(str)
+    rescue ArgumentError
+      parse_time(str)
     end
   end
 end
