@@ -175,8 +175,20 @@ module LogSentry
     # gecersiz baytlar olabilir, onlari Parser scrub ile temizliyor (Adim 2).
     def open_file
       wait_for_file
+      return unless @running
 
-      @file = File.open(@path, 'rb')
+      retries = 0
+      @file = begin
+        File.open(@path, 'rb')
+      rescue Errno::EACCES
+        retries += 1
+        if retries <= 5 && @running
+          sleep 0.1
+          retry
+        else
+          raise
+        end
+      end
 
       resumed = resume_from_checkpoint
       unless resumed

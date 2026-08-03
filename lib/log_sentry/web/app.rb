@@ -42,8 +42,34 @@ module LogSentry
       set :auth_enabled, false
       set :auth_user,    ENV['LOGSENTRY_WEB_USER'] || 'admin'
       set :auth_pass,    ENV['LOGSENTRY_WEB_PASS']
+      set :rate_limit_enabled, false
+      set :rate_limit_max, 60
+      set :rate_limit_window, 60
+
+      RATE_LIMIT_STORE = {}
+      RATE_LIMIT_MUTEX = Mutex.new
+
+      def self.check_rate_limit(ip, max, window)
+        now = Time.now.to_i
+        RATE_LIMIT_MUTEX.synchronize do
+          history = (RATE_LIMIT_STORE[ip] ||= [])
+          history.reject! { |t| t < (now - window) }
+          return false if history.size >= max
+
+          history << now
+          true
+        end
+      end
 
       before do
+        if settings.rate_limit_enabled
+          client_ip = request.ip
+          unless self.class.check_rate_limit(client_ip, settings.rate_limit_max, settings.rate_limit_window)
+            halt 429, { 'Content-Type' => 'text/plain', 'Retry-After' => settings.rate_limit_window.to_s },
+                 "429 -- Cok Fazla Istek (Rate Limit Exceeded)\n"
+          end
+        end
+
         if settings.auth_enabled || (settings.auth_pass && !settings.auth_pass.to_s.empty?)
           auth = Rack::Auth::Basic::Request.new(request.env)
           unless auth.provided? && auth.basic? && auth.credentials &&

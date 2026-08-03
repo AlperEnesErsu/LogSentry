@@ -19,6 +19,7 @@
 # ============================================================================
 
 require 'minitest/autorun'
+require 'json'
 
 lib_path = File.expand_path('../lib', __dir__)
 lib_path = File.expand_path('./lib') unless File.exist?(File.join(lib_path, 'log_sentry.rb'))
@@ -415,6 +416,28 @@ class ParserTest < Minitest::Test
     e = parser.parse('1.2.3.4 - - [29/Jul/2026:14:39:25 +0300] "GET / HTTP/1.1" 200 5 "-" "x"')
 
     assert_nil e.raw
+  end
+
+  def test_json_format_log_ayristirilir
+    json_parser = LogSentry::Parser.new(format: :json)
+    line = JSON.generate({
+      'remote_addr' => '10.0.0.99',
+      'timestamp'   => '2026-08-03T12:00:00+03:00',
+      'method'      => 'POST',
+      'uri'         => '/api/login',
+      'status_code' => 401,
+      'body_bytes_sent' => 256,
+      'http_user_agent' => 'Mozilla/5.0'
+    })
+
+    e = json_parser.parse(line)
+    refute_nil e
+    assert_equal '10.0.0.99', e.ip
+    assert_equal 'POST', e.http_method
+    assert_equal '/api/login', e.path
+    assert_equal 401, e.status
+    assert_equal 256, e.bytes
+    assert_equal 'Mozilla/5.0', e.user_agent
   end
 
   private
