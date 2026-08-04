@@ -53,7 +53,11 @@ module LogSentry
       attr_reader :name, :window, :threshold, :cooldown, :severity,
                   :group_by_subnet, :evaluated_count, :alert_count
 
-      def initialize(window:, threshold:, cooldown: 120, severity: :medium, group_by_subnet: false, **_extra)
+      def initialize(window:, threshold:, cooldown: 120, severity: :medium, group_by_subnet: false, **extra)
+        unless extra.empty?
+          raise ArgumentError, "bilinmeyen kural secenegi: #{extra.keys.first.inspect}"
+        end
+
         @window          = window      # saniye
         @threshold       = threshold   # bu sayiyi ASARSA alarm
         @cooldown        = cooldown    # ayni anahtar icin susma suresi

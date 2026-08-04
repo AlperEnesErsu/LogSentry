@@ -193,8 +193,8 @@ module LogSentry
           text: <<~MSG.strip,
             #{severity_icon(alert.severity)} *LogSentry — #{alert.rule}*
 
-            *Kaynak:* `#{alert.ip}`
-            *Durum:* #{alert.message}
+            *Kaynak:* `#{escape_markdown(alert.ip)}`
+            *Durum:* #{escape_markdown(alert.message)}
             *Olculen:* #{alert.count} (esik: #{alert.threshold}, #{alert.window} sn)
             *Zaman:* #{alert.time.strftime('%Y-%m-%d %H:%M:%S %z')}
           MSG
@@ -204,6 +204,10 @@ module LogSentry
           # kapatilmasiyla sonuclanir.
           disable_notification: alert.severity_rank < 2
         }
+      end
+
+      def escape_markdown(text)
+        text.to_s.gsub(/[*_`\[\]]/, '')
       end
 
       # Slack Incoming Webhook

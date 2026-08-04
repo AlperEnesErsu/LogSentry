@@ -56,6 +56,7 @@ class WebTest < Minitest::Test
 
   def teardown
     @store&.close
+    LogSentry::Web::App.set :store, nil
     FileUtils.remove_entry(@dir) if @dir && File.exist?(@dir)
   rescue Errno::EACCES
     # Windows: acik dosya silinemez, sorun degil

@@ -149,6 +149,13 @@ rules:
     window: 60
     threshold: 0
 
+  # Zararli IP tehdit istihbarat listesi:
+  threat_intel:
+    enabled: true
+    window: 60
+    threshold: 0
+    blacklist: []
+
 # --- Allowlist: alarm uretmesi BEKLENEN ama zararsiz trafik ----------------
 #  Kurumsal ortamda her zaman vardir:
 #    - LB'nin saglik kontrolu (saniyede birkac kez /health) -> flood tetikler

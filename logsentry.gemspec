@@ -24,7 +24,7 @@ Gem::Specification.new do |spec|
     'LICENSE',
     'README.md'
   ]
-  spec.executables   = ['logsentry', 'logsentry-web', 'logsentry-archive']
+  spec.executables   = ['logsentry', 'logsentry-web', 'logsentry-archive', 'logsentry-doctor']
   spec.require_paths = ['lib']
 
   # Adim 1-5 arasi cekirdek sifir bagimlilikla calisir; asagidakiler

@@ -117,7 +117,14 @@ module LogSentry
       new(rules: rules, allowlist: allowlist)
     end
 
+    KNOWN_RULE_OPTIONS = %w[enabled window threshold cooldown statuses paths severity group_by_subnet blacklist agents].freeze
+
     def self.build_rule(klass, opts, global_cooldown)
+      unknown_keys = opts.keys - KNOWN_RULE_OPTIONS
+      unless unknown_keys.empty?
+        raise ArgumentError, "bilinmeyen kural secenegi: #{unknown_keys.first.inspect}"
+      end
+
       kwargs = {
         window:    Integer(opts.fetch('window')),
         threshold: Integer(opts.fetch('threshold')),
@@ -129,6 +136,8 @@ module LogSentry
       kwargs[:paths]           = opts['paths']             if opts['paths']
       kwargs[:severity]        = opts['severity'].to_sym   if opts['severity']
       kwargs[:group_by_subnet] = opts['group_by_subnet'] if opts.key?('group_by_subnet')
+      kwargs[:blacklist]       = opts['blacklist']       if opts['blacklist']
+      kwargs[:agents]          = opts['agents']          if opts['agents']
 
       klass.new(**kwargs)
     end

@@ -40,15 +40,7 @@ module LogSentry
         ip = IPAddr.new(ip_str)
         return 'LOCAL' if PRIVATE_RANGES.any? { |range| range.include?(ip) }
 
-        # Mocked deterministic offline lookup for external IPs (or Cloudflare/DNS IP ranges)
-        first_octet = ip_str.split('.').first.to_i rescue 0
-        case first_octet
-        when 1, 104 then 'US'
-        when 45, 185 then 'RU'
-        when 88, 176, 212 then 'TR'
-        when 5, 31, 95 then 'DE'
-        else 'GLOBAL'
-        end
+        'UNKNOWN'
       rescue IPAddr::InvalidAddressError, ArgumentError
         'UNKNOWN'
       end

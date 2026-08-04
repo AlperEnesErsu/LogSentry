@@ -22,9 +22,11 @@ require 'sinatra/base'
 require 'json'
 require 'erb'
 require 'rack'
+require 'openssl'
 require_relative '../store'
 require_relative '../archiver'
 require_relative '../tailer'
+require_relative '../enrichers/geoip'
 
 module LogSentry
   module Web
@@ -53,8 +55,11 @@ module LogSentry
       def self.check_rate_limit(ip, max, window)
         now = Time.now.to_i
         RATE_LIMIT_MUTEX.synchronize do
+          RATE_LIMIT_STORE.delete_if do |_, history|
+            history.reject! { |t| t < (now - window) }
+            history.empty?
+          end
           history = (RATE_LIMIT_STORE[ip] ||= [])
-          history.reject! { |t| t < (now - window) }
           return false if history.size >= max
 
           history << now
@@ -71,10 +76,12 @@ module LogSentry
           end
         end
 
-        if settings.auth_enabled || (settings.auth_pass && !settings.auth_pass.to_s.empty?)
+        if (settings.auth_enabled || (settings.auth_pass && !settings.auth_pass.to_s.empty?)) && request.path_info != '/webhooks/github'
           auth = Rack::Auth::Basic::Request.new(request.env)
           unless auth.provided? && auth.basic? && auth.credentials &&
-                 auth.credentials == [settings.auth_user, settings.auth_pass]
+                 auth.credentials.size == 2 &&
+                 Rack::Utils.secure_compare(auth.credentials[0], settings.auth_user) &&
+                 Rack::Utils.secure_compare(auth.credentials[1], settings.auth_pass.to_s)
             headers['WWW-Authenticate'] = 'Basic realm="LogSentry Restricted Area"'
             halt 401, { 'Content-Type' => 'text/plain' }, "401 -- Yetkisiz Erisim (Authentication Required)\n"
           end
@@ -113,6 +120,10 @@ module LogSentry
         # ====================================================================
         def h(text)
           Rack::Utils.escape_html(text.to_s)
+        end
+
+        def country_code(ip)
+          LogSentry::Enrichers::GeoIP.lookup(ip)
         end
 
         def store
@@ -183,7 +194,7 @@ module LogSentry
         end
 
         stats = (store.stats rescue {})
-        alert_count = (store.alerts(limit: 1000).size rescue 0)
+        alert_count = (store.count_alerts rescue 0)
 
         metrics = []
         metrics << "# HELP logsentry_up LogSentry service status"
@@ -194,7 +205,7 @@ module LogSentry
         metrics << "logsentry_alerts_total #{alert_count}"
         metrics << "# HELP logsentry_events_total Total stored events"
         metrics << "# TYPE logsentry_events_total counter"
-        metrics << "logsentry_events_total #{stats[:events_count] || 0}"
+        metrics << "logsentry_events_total #{stats[:events] || 0}"
 
         metrics.join("\n") + "\n"
       end
@@ -222,7 +233,7 @@ module LogSentry
         repo  = payload.dig('repository', 'full_name') || 'unknown/repo'
 
         entry = LogSentry::Entry.new(
-          ip: request.ip,
+          ip: request.ip || '127.0.0.1',
           time: Time.now,
           http_method: 'POST',
           path: "/webhooks/github/#{event_type}",
@@ -233,7 +244,7 @@ module LogSentry
           user_agent: "GitHub-Hookshot (#{actor})"
         )
 
-        store&.append_event(entry)
+        store&.record_event(entry)
 
         JSON.generate(status: 'ok', event: event_type, repo: repo)
       end
