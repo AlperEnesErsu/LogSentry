@@ -117,13 +117,13 @@ app.set :port,       port
 
 # Authentication / RBAC settings
 auth_cfg = web_cfg['auth'] || {}
-auth_enabled = auth_cfg.fetch('enabled', !ENV['LOGSENTRY_WEB_PASS'].to_s.empty? || !auth_cfg['admin_pass'].to_s.empty?)
+auth_enabled = auth_cfg.fetch('enabled', false) || !ENV['LOGSENTRY_WEB_PASS'].to_s.empty?
 app.set :auth_enabled, auth_enabled
 app.set :auth_user, ENV['LOGSENTRY_WEB_USER'] || auth_cfg['admin_user'] || 'admin'
-app.set :auth_pass, ENV['LOGSENTRY_WEB_PASS'] || auth_cfg['admin_pass']
+app.set :auth_pass, auth_enabled ? (ENV['LOGSENTRY_WEB_PASS'] || auth_cfg['admin_pass']) : nil
 
 app.set :auth_viewer_user, ENV['LOGSENTRY_WEB_VIEWER_USER'] || auth_cfg['viewer_user'] || 'viewer'
-app.set :auth_viewer_pass, ENV['LOGSENTRY_WEB_VIEWER_PASS'] || auth_cfg['viewer_pass']
+app.set :auth_viewer_pass, auth_enabled ? (ENV['LOGSENTRY_WEB_VIEWER_PASS'] || auth_cfg['viewer_pass']) : nil
 
 # Puma: thread'li bir sunucu. SSE icin SART -- her canli akis baglantisi bir
 # thread'i uzun sure mesgul tutar. Tek thread'li bir sunucuda (ornegin
