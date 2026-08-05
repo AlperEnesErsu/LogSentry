@@ -53,23 +53,40 @@ module LogSentry
       set :rate_limit_window, 60
       set :page_size, 50
 
-      RATE_LIMIT_STORE = {}
-      RATE_LIMIT_MUTEX = Mutex.new
+       HEARTBEAT_INTERVAL = 15
 
-      def self.check_rate_limit(ip, max, window)
-        now = Time.now.to_i
-        RATE_LIMIT_MUTEX.synchronize do
-          RATE_LIMIT_STORE.delete_if do |_, history|
-            history.reject! { |t| t < (now - window) }
-            history.empty?
-          end
-          history = (RATE_LIMIT_STORE[ip] ||= [])
-          return false if history.size >= max
+       RATE_LIMIT_STORE = {}
+       RATE_LIMIT_MUTEX = Mutex.new
 
-          history << now
-          true
-        end
-      end
+       def self.check_rate_limit(ip, max, window)
+         now = Time.now.to_i
+         RATE_LIMIT_MUTEX.synchronize do
+           # 1) Check if the IP is new to the store
+           is_new_ip = !RATE_LIMIT_STORE.key?(ip)
+
+           # 2) If it is a new IP and the store is large, perform a full cleanup
+           if is_new_ip && RATE_LIMIT_STORE.size > 1000
+             RATE_LIMIT_STORE.delete_if do |_, h|
+               h.reject! { |t| t < (now - window) }
+               h.empty?
+             end
+           end
+
+           # 3) Clean up only the current IP's old history (O(1))
+           history = RATE_LIMIT_STORE[ip]
+           if history
+             history.reject! { |t| t < (now - window) }
+             RATE_LIMIT_STORE.delete(ip) if history.empty?
+           end
+
+           # 4) Threshold check and append
+           history = (RATE_LIMIT_STORE[ip] ||= [])
+           return false if history.size >= max
+
+           history << now
+           true
+         end
+       end
 
       before do
         if settings.rate_limit_enabled
@@ -243,6 +260,11 @@ module LogSentry
       post '/webhooks/github' do
         content_type :json
         payload_body = request.body.read
+        # Govde boyutu sinirlama (Maksimum 1 MB)
+        if request.content_length.to_i > 1_048_576 || payload_body.bytesize > 1_048_576
+          halt 413, JSON.generate(error: 'Payload Too Large')
+        end
+
         secret = ENV['LOGSENTRY_GITHUB_WEBHOOK_SECRET']
 
         if secret && !secret.empty?
@@ -251,6 +273,8 @@ module LogSentry
           unless header_sig && Rack::Utils.secure_compare(signature, header_sig)
             halt 401, JSON.generate(error: 'Invalid HMAC signature')
           end
+        else
+          halt 401, JSON.generate(error: 'Webhook secret is not configured')
         end
 
         event_type = request.env['HTTP_X_GITHUB_EVENT'] || 'ping'

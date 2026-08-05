@@ -16,7 +16,7 @@ module LogSentry
       def initialize(store: nil, blacklist: nil, severity: :critical, window: 60, threshold: 0, **opts)
         super(window: window, threshold: threshold, severity: severity, **opts)
         @store = store
-        @blacklist = blacklist ? Set.new(blacklist) : DEFAULT_BLACKLIST
+        @blacklist = (blacklist.nil? || blacklist.empty?) ? DEFAULT_BLACKLIST : Set.new(blacklist)
       end
 
       def interested?(entry)

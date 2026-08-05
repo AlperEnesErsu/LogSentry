@@ -207,7 +207,10 @@ module LogSentry
       end
 
       def escape_markdown(text)
-        text.to_s.gsub(/[*_`\[\]]/, '')
+        escaped = text.to_s.gsub(/[*_`\[\]]/) { |m| "\\#{m}" }
+        escaped += '\\*' if escaped.count('*').odd?
+        escaped += '\\_' if escaped.count('_').odd?
+        escaped
       end
 
       # Slack Incoming Webhook

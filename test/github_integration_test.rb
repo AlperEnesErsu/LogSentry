@@ -19,17 +19,24 @@ class GitHubIntegrationTest < Minitest::Test
     @request = Rack::MockRequest.new(@app)
   end
 
+  def teardown
+    ENV.delete('LOGSENTRY_GITHUB_WEBHOOK_SECRET')
+  end
+
   def test_github_webhook_receive_ping_event
+    ENV['LOGSENTRY_GITHUB_WEBHOOK_SECRET'] = 'mysecret'
     payload = JSON.generate({
       zen: 'Responsive is better than fast.',
       repository: { full_name: 'AlperEnesErsu/LogSentry' },
       sender: { login: 'AlperEnesErsu' }
     })
+    sig = 'sha256=' + OpenSSL::HMAC.hexdigest(OpenSSL::Digest.new('sha256'), 'mysecret', payload)
 
     res = @request.post('/webhooks/github',
       input: payload,
       'CONTENT_TYPE' => 'application/json',
-      'HTTP_X_GITHUB_EVENT' => 'ping'
+      'HTTP_X_GITHUB_EVENT' => 'ping',
+      'HTTP_X_HUB_SIGNATURE_256' => sig
     )
 
     assert_equal 200, res.status

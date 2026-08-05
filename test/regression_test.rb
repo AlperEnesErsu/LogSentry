@@ -49,12 +49,14 @@ class RegressionTest < Minitest::Test
     @app.set :auth_pass,           nil
     @app.set :rate_limit_enabled,  false
     @request = Rack::MockRequest.new(@app)
+    ENV.delete('LOGSENTRY_GITHUB_WEBHOOK_SECRET')
   end
 
   def teardown
     @store.close unless @store.closed?
     @app.set :store, nil
     LogSentry::Web::App::RATE_LIMIT_STORE.clear
+    ENV.delete('LOGSENTRY_GITHUB_WEBHOOK_SECRET')
     FileUtils.remove_entry(@dir) if File.exist?(@dir)
   rescue Errno::EACCES
     nil
@@ -74,28 +76,34 @@ class RegressionTest < Minitest::Test
   #  hic calismiyordu. Gercek kurulumda store HER ZAMAN bagli olur.
   # ==========================================================================
   def test_webhook_store_bagliyken_200_doner
+    ENV['LOGSENTRY_GITHUB_WEBHOOK_SECRET'] = 'mysecret'
     payload = JSON.generate(
       zen: 'x',
       repository: { full_name: 'AlperEnesErsu/LogSentry' },
       sender: { login: 'AlperEnesErsu' }
     )
+    sig = 'sha256=' + OpenSSL::HMAC.hexdigest(OpenSSL::Digest.new('sha256'), 'mysecret', payload)
 
     res = @request.post('/webhooks/github',
                         input: payload,
                         'CONTENT_TYPE' => 'application/json',
-                        'HTTP_X_GITHUB_EVENT' => 'ping')
+                        'HTTP_X_GITHUB_EVENT' => 'ping',
+                        'HTTP_X_HUB_SIGNATURE_256' => sig)
 
     assert_equal 200, res.status,
                  'store bagliyken webhook 500 veriyor (Store#append_event yok, dogrusu record_event)'
   end
 
   def test_webhook_olayi_gercekten_veritabanina_yazar
+    ENV['LOGSENTRY_GITHUB_WEBHOOK_SECRET'] = 'mysecret'
     payload = JSON.generate(repository: { full_name: 'a/b' }, sender: { login: 'c' })
+    sig = 'sha256=' + OpenSSL::HMAC.hexdigest(OpenSSL::Digest.new('sha256'), 'mysecret', payload)
 
     @request.post('/webhooks/github',
                   input: payload,
                   'CONTENT_TYPE' => 'application/json',
-                  'HTTP_X_GITHUB_EVENT' => 'push')
+                  'HTTP_X_GITHUB_EVENT' => 'push',
+                  'HTTP_X_HUB_SIGNATURE_256' => sig)
     @store.flush
 
     paths = @store.events(limit: 10).map { |e| e[:path] }
