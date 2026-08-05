@@ -102,7 +102,7 @@
               <td>
                 <%# h() ZORUNLU: IP alani ayristirmadan geliyor, yani %>
                 <%# saldirgan tarafindan etkilenebilir bir alan. %>
-                <a href="/alerts?ip=<%= h row[:ip] %>"><code><%= h row[:ip] %></code></a>
+                <a href="/ips/<%= h row[:ip] %>"><code><%= h row[:ip] %></code></a>
               </td>
               <td class="num">
                 <%= number row[:total] %>

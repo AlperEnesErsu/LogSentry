@@ -18,7 +18,7 @@
         </td>
         <td><span class="sev sev-<%= severity_class(a[:severity]) %>"><%= h a[:severity] %></span></td>
         <td><code><%= h a[:rule] %></code></td>
-        <td><code><%= h a[:ip] %></code></td>
+        <td><a href="/ips/<%= h a[:ip] %>"><code><%= h a[:ip] %></code></a></td>
         <%# message alani kural tarafindan uretiliyor ama icinde entry.path %>
         <%# gecebiliyor -- yani saldirgan etkisi altinda. h() zorunlu. %>
         <td><%= h a[:message] %></td>

@@ -1,0 +1,94 @@
+<div class="crumb">
+  <a href="/">&larr; Dashboard</a> &middot; <a href="/alerts">Uyarılar</a>
+</div>
+
+<h1>IP Profili <small><%= h @ip %></small></h1>
+
+<section class="cards">
+  <div class="card">
+    <div class="card-label">Toplam İstek</div>
+    <div class="card-value"><%= number @total_requests %></div>
+  </div>
+  <div class="card">
+    <div class="card-label">Başarısız Giriş (401/403)</div>
+    <div class="card-value <%= 'warn' if @failed_logins.positive? %>"><%= number @failed_logins %></div>
+  </div>
+  <div class="card">
+    <div class="card-label">Tetiklenen Uyarı</div>
+    <div class="card-value <%= 'warn' if @total_alerts.positive? %>"><%= number @total_alerts %></div>
+  </div>
+  <div class="card">
+    <div class="card-label">Ülke Kodu</div>
+    <div class="card-value"><%= h @country %></div>
+  </div>
+</section>
+
+<div class="two-col">
+  <section class="panel">
+    <h2>Son Olaylar (Maks 50)</h2>
+    <% if @recent_events.empty? %>
+      <p class="empty">Bu IP adresine ait herhangi bir istek kaydı bulunamadı.</p>
+    <% else %>
+      <table>
+        <thead>
+          <tr>
+            <th>Zaman</th>
+            <th>Metot</th>
+            <th>Yol</th>
+            <th>Durum</th>
+            <th class="num">Bayt</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% @recent_events.each do |e| %>
+            <tr class="<%= 'row-fail' if e[:status].to_i >= 500 %> <%= 'row-warn' if [401, 403].include?(e[:status].to_i) %>">
+              <td class="nowrap"><%= h time_fmt(e[:time]) %></td>
+              <td><code><%= h e[:method] %></code></td>
+              <td class="path"><code><%= h e[:path] %></code></td>
+              <td>
+                <span class="sev <%= e[:status].to_i >= 500 ? 'sev-critical' : ([401, 403].include?(e[:status].to_i) ? 'sev-high' : 'sev-low') %>">
+                  <%= h e[:status] %>
+                </span>
+              </td>
+              <td class="num"><%= number e[:bytes] %></td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    <% end %>
+  </section>
+
+  <section class="panel">
+    <h2>Son Uyarılar (Maks 20)</h2>
+    <% if @recent_alerts.empty? %>
+      <p class="empty">Bu IP adresinin tetiklediği güvenlik uyarısı bulunmuyor.</p>
+    <% else %>
+      <table>
+        <thead>
+          <tr>
+            <th>Zaman</th>
+            <th>Önem</th>
+            <th>Kural</th>
+            <th>Açıklama</th>
+            <th class="num">Ölçülen</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <% @recent_alerts.each do |a| %>
+            <tr>
+              <td class="nowrap">
+                <%= h time_fmt(a[:time]) %>
+              </td>
+              <td><span class="sev sev-<%= severity_class(a[:severity]) %>"><%= h a[:severity] %></span></td>
+              <td><code><%= h a[:rule] %></code></td>
+              <td><%= h a[:message] %></td>
+              <td class="num"><%= number a[:count] %> / <%= number a[:threshold] %></td>
+              <td><a class="btn" href="/alerts/<%= a[:id].to_i %>">kanıt &rarr;</a></td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    <% end %>
+  </section>
+</div>

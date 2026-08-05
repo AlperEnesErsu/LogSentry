@@ -62,6 +62,7 @@ OptionParser.new do |o|
   o.on('--status',  'durum bilgisi')                   { options[:action] = :status }
   o.on('--check',   'yapilandirmayi dogrula ve cik')   { options[:action] = :check }
   o.on('--replay PATH', 'gecmis logu veritabanina yazmadan simule et') { |v| options[:action] = :replay; options[:replay_file] = File.expand_path(v) }
+  o.on('--fetch-github REPO', 'GitHub olaylarini cek ve yazdir') { |v| options[:action] = :github; options[:github_repo] = v }
 
   o.on('-v', '--version', 'surum') do
     puts "LogSentry v#{LogSentry::VERSION}"
@@ -218,11 +219,17 @@ when :replay
   parser_format = (config.dig('parser', 'format') || :combined).to_sym
   parser = LogSentry::Parser.new(format: parser_format)
   alerts_count = 0
+  parsed_count = 0
+  failed_count = 0
 
   File.foreach(options[:replay_file]) do |line|
     entry = parser.parse(line)
-    next unless entry
+    unless entry
+      failed_count += 1
+      next
+    end
 
+    parsed_count += 1
     alerts = engine.process(entry)
     alerts.each do |alert|
       alerts_count += 1
@@ -232,6 +239,23 @@ when :replay
 
   puts '=========================================='
   puts "Simulasyon Tamamlandi: #{alerts_count} alarm uretildi."
+  if failed_count > 0
+    puts "Uyari: #{failed_count} ayristirilemeyen/okunamayan satir atlandi."
+  end
+
+  if parsed_count.zero? && failed_count > 0
+    abort 'HATA: Replay dosyasindan hicbir satir ayristirilamadi/okunamadi.'
+  end
+  exit 0
+
+when :github
+  require 'log_sentry/fetchers/github'
+  events = LogSentry::Fetchers::GitHub.fetch_events(repo: options[:github_repo])
+  puts "=== GITHUB OLAYLARI (#{options[:github_repo]}) ==="
+  puts "Toplam #{events.size} olay cekildi:"
+  events.each do |e|
+    puts "[#{e.time.iso8601}] IP: #{e.ip} - Referer: #{e.referer} - Agent: #{e.user_agent}"
+  end
   exit 0
 
 # --- Calistir --------------------------------------------------------------

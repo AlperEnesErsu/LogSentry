@@ -54,6 +54,10 @@ abort "HATA: yapilandirma yok: #{options[:config]}" unless File.exist?(options[:
 config = YAML.load_file(options[:config])
 Dir.chdir(ROOT)   # yapilandirmadaki yollar goreli
 
+if config['geoip'] && config['geoip']['custom_ranges']
+  LogSentry::Enrichers::GeoIP.load_ranges(config['geoip']['custom_ranges'])
+end
+
 web_cfg = config['web'] || {}
 bind    = options[:bind] || web_cfg.fetch('bind', '127.0.0.1')
 port    = options[:port] || web_cfg.fetch('port', 4567)
@@ -110,6 +114,16 @@ app.set :read_only,  !options[:allow_write] && web_cfg.fetch('read_only', true)
 app.set :page_size,  web_cfg.fetch('page_size', 50)
 app.set :bind,       bind
 app.set :port,       port
+
+# Authentication / RBAC settings
+auth_cfg = web_cfg['auth'] || {}
+auth_enabled = auth_cfg.fetch('enabled', !ENV['LOGSENTRY_WEB_PASS'].to_s.empty? || !auth_cfg['admin_pass'].to_s.empty?)
+app.set :auth_enabled, auth_enabled
+app.set :auth_user, ENV['LOGSENTRY_WEB_USER'] || auth_cfg['admin_user'] || 'admin'
+app.set :auth_pass, ENV['LOGSENTRY_WEB_PASS'] || auth_cfg['admin_pass']
+
+app.set :auth_viewer_user, ENV['LOGSENTRY_WEB_VIEWER_USER'] || auth_cfg['viewer_user'] || 'viewer'
+app.set :auth_viewer_pass, ENV['LOGSENTRY_WEB_VIEWER_PASS'] || auth_cfg['viewer_pass']
 
 # Puma: thread'li bir sunucu. SSE icin SART -- her canli akis baglantisi bir
 # thread'i uzun sure mesgul tutar. Tek thread'li bir sunucuda (ornegin

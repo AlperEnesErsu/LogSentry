@@ -23,6 +23,7 @@ require 'json'
 require 'erb'
 require 'rack'
 require 'openssl'
+require 'time'
 require_relative '../store'
 require_relative '../archiver'
 require_relative '../tailer'
@@ -45,9 +46,12 @@ module LogSentry
       set :auth_enabled, false
       set :auth_user,    ENV['LOGSENTRY_WEB_USER'] || 'admin'
       set :auth_pass,    ENV['LOGSENTRY_WEB_PASS']
+      set :auth_viewer_user, ENV['LOGSENTRY_WEB_VIEWER_USER'] || 'viewer'
+      set :auth_viewer_pass, ENV['LOGSENTRY_WEB_VIEWER_PASS']
       set :rate_limit_enabled, false
       set :rate_limit_max, 60
       set :rate_limit_window, 60
+      set :page_size, 50
 
       RATE_LIMIT_STORE = {}
       RATE_LIMIT_MUTEX = Mutex.new
@@ -78,12 +82,35 @@ module LogSentry
 
         if (settings.auth_enabled || (settings.auth_pass && !settings.auth_pass.to_s.empty?)) && request.path_info != '/webhooks/github'
           auth = Rack::Auth::Basic::Request.new(request.env)
-          unless auth.provided? && auth.basic? && auth.credentials &&
-                 auth.credentials.size == 2 &&
-                 Rack::Utils.secure_compare(auth.credentials[0], settings.auth_user) &&
-                 Rack::Utils.secure_compare(auth.credentials[1], settings.auth_pass.to_s)
+          unless auth.provided? && auth.basic? && auth.credentials && auth.credentials.size == 2
             headers['WWW-Authenticate'] = 'Basic realm="LogSentry Restricted Area"'
             halt 401, { 'Content-Type' => 'text/plain' }, "401 -- Yetkisiz Erisim (Authentication Required)\n"
+          end
+
+          username, password = auth.credentials
+          is_admin = Rack::Utils.secure_compare(username, settings.auth_user) &&
+                     Rack::Utils.secure_compare(password, settings.auth_pass.to_s)
+          
+          is_viewer = false
+          if settings.respond_to?(:auth_viewer_user) && settings.respond_to?(:auth_viewer_pass) && settings.auth_viewer_pass
+            is_viewer = Rack::Utils.secure_compare(username, settings.auth_viewer_user) &&
+                        Rack::Utils.secure_compare(password, settings.auth_viewer_pass.to_s)
+          end
+
+          if is_admin
+            role = :admin
+          elsif is_viewer
+            role = :viewer
+          else
+            headers['WWW-Authenticate'] = 'Basic realm="LogSentry Restricted Area"'
+            halt 401, { 'Content-Type' => 'text/plain' }, "401 -- Yetkisiz Erisim (Authentication Required)\n"
+          end
+
+          env['logsentry.role'] = role
+
+          # RBAC yetki kontrolü: viewer sadece okuma (GET/HEAD) yapabilir
+          if role == :viewer && !%w[GET HEAD].include?(request.request_method)
+            halt 403, { 'Content-Type' => 'text/plain' }, "403 -- Yetkiniz bu islem icin yetersizdir (Admin yetkisi gerekli)\n"
           end
         end
 
@@ -264,6 +291,116 @@ module LogSentry
         @totals  = store.stats
 
         erb :dashboard
+      end
+
+      # ======================================================================
+      #  LOG GEZGINI (EXPLORER)
+      # ======================================================================
+      get '/explorer' do
+        halt 503, erb(:no_store) if store.nil?
+
+        @page  = [int_param('page', 1), 1].max
+        @limit = settings.respond_to?(:page_size) ? settings.page_size : 50
+
+        @filters = {
+          ip:        filter('ip'),
+          status:    filter('status'),
+          path_like: filter('path_like'),
+          from:      filter('from'),
+          to:        filter('to')
+        }
+
+        from_time = nil
+        to_time   = nil
+
+        if @filters[:from]
+          begin
+            from_time = Time.parse(@filters[:from])
+          rescue StandardError
+            # Hatalı tarihi yoksay
+          end
+        end
+
+        if @filters[:to]
+          begin
+            to_time = Time.parse(@filters[:to])
+          rescue StandardError
+            # Hatalı tarihi yoksay
+          end
+        end
+
+        # CSV formatı istenmiş mi?
+        if params[:format] == 'csv'
+          content_type 'text/csv'
+          attachment "logsentry-explorer-#{Time.now.strftime('%Y%m%d%H%M%S')}.csv"
+
+          csv_events = store.events(
+            limit: 5000,
+            ip: @filters[:ip],
+            status: @filters[:status],
+            path_like: @filters[:path_like],
+            from: from_time,
+            to: to_time
+          )
+
+          require 'csv'
+          return CSV.generate(col_sep: ';') do |csv|
+            csv << ['Zaman', 'Kaynak IP', 'Metot', 'Yol', 'Durum Kodu', 'Bayt', 'User Agent']
+            csv_events.each do |e|
+              csv << [
+                e[:time].strftime('%Y-%m-%d %H:%M:%S'),
+                e[:ip],
+                e[:method],
+                e[:path],
+                e[:status],
+                e[:bytes],
+                e[:user_agent]
+              ]
+            end
+          end
+        end
+
+        @total  = store.count_events(
+          ip: @filters[:ip],
+          status: @filters[:status],
+          path_like: @filters[:path_like],
+          from: from_time,
+          to: to_time
+        )
+
+        @events = store.events(
+          limit: @limit,
+          offset: (@page - 1) * @limit,
+          ip: @filters[:ip],
+          status: @filters[:status],
+          path_like: @filters[:path_like],
+          from: from_time,
+          to: to_time
+        )
+
+        @pages = [(@total / @limit.to_f).ceil, 1].max
+
+        erb :explorer
+      end
+
+      # ======================================================================
+      #  TEK IP DETAY SAYFASI
+      # ======================================================================
+      get '/ips/:ip' do
+        halt 503, erb(:no_store) if store.nil?
+
+        @ip = params[:ip].to_s.strip
+        halt 404, erb(:not_found) if @ip.empty?
+
+        @total_requests = store.db.execute('SELECT COUNT(*) FROM events WHERE ip = ?', [@ip]).first.first
+        @failed_logins  = store.db.execute('SELECT COUNT(*) FROM events WHERE ip = ? AND status IN (401, 403)', [@ip]).first.first
+        @total_alerts   = store.db.execute('SELECT COUNT(*) FROM alerts WHERE ip = ?', [@ip]).first.first
+        @country        = LogSentry::Enrichers::GeoIP.lookup(@ip)
+
+        @recent_events = store.events(ip: @ip, limit: 50)
+        @recent_alerts = store.alerts(ip: @ip, limit: 20)
+
+        erb :ips
       end
 
       # ======================================================================

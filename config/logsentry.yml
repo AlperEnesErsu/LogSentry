@@ -47,6 +47,9 @@ log_file: logs/access.log
 #  Kurulumdan sonra mutlaka dogrula:
 #      bin/logsentry --from-begin --once
 #  ciktisindaki ayristirma basari oranina bak.
+# log_format: combined        # format: json | combined | combined_xff | common
+# Not: Nginx/Apache logu yerine JSON loglarını işlemek için 'json' kullanabilirsiniz.
+# Satır '{' ile başlıyorsa yapay zeka otomatik olarak JSON formatına geçer.
 log_format: combined
 
 # --- Guvenilir vekiller (load balancer / ters vekil) -----------------------
@@ -155,6 +158,18 @@ rules:
     window: 60
     threshold: 0
     blacklist: []
+
+  # İmkansız seyahat tespiti (Aynı User-Agent'ın farklı coğrafi konumlardan gelişi):
+  impossible_travel:
+    enabled: true
+    window: 3600
+    threshold: 0
+
+  # Yavaş brute force tespiti (Geniş zaman pencereli failed logins tespiti):
+  low_and_slow_brute_force:
+    enabled: true
+    window: 86400
+    threshold: 10
 
 # --- Allowlist: alarm uretmesi BEKLENEN ama zararsiz trafik ----------------
 #  Kurumsal ortamda her zaman vardir:
@@ -303,3 +318,23 @@ web:
 
   page_size: 50               # listelerde sayfa basina kayit
   live_stream: true           # SSE ile canli akis
+
+  # Rol Tabanlı Yetkilendirme (RBAC) Ayarları
+  auth:
+    enabled: false             # true yapılarak aktif edilebilir (ya da env üzerinden)
+    admin_user: "admin"
+    admin_pass: "admin123"     # admin tüm haklara sahip (yazma kapalı değilse)
+    viewer_user: "viewer"
+    viewer_pass: "viewer123"   # viewer sadece okuma (GET/HEAD) yapabilir
+
+
+# --- GeoIP Ayarları --------------------------------------------------------
+geoip:
+  custom_ranges:
+    - subnet: "192.168.0.0/16"
+      country: "LOCAL"
+    - subnet: "88.243.0.0/16"
+      country: "TR"
+    - subnet: "45.155.0.0/16"
+      country: "RU"
+

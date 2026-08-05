@@ -13,12 +13,17 @@ module LogSentry
         '198.51.100.1'
       ]).freeze
 
-      def initialize(blacklist: nil, severity: :critical, window: 60, threshold: 0, **opts)
+      def initialize(store: nil, blacklist: nil, severity: :critical, window: 60, threshold: 0, **opts)
         super(window: window, threshold: threshold, severity: severity, **opts)
+        @store = store
         @blacklist = blacklist ? Set.new(blacklist) : DEFAULT_BLACKLIST
       end
 
       def interested?(entry)
+        if @store && @store.threat_ip?(entry.ip)
+          return true
+        end
+
         @blacklist.include?(entry.ip)
       end
 
@@ -34,7 +39,7 @@ module LogSentry
       end
 
       def extra_signature
-        @blacklist.to_a.sort
+        [@blacklist.to_a.sort, @store.nil?]
       end
     end
   end

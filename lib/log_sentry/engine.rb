@@ -29,18 +29,22 @@ require_relative 'rules/sqli'
 require_relative 'rules/xss'
 require_relative 'rules/scanner'
 require_relative 'rules/threat_intel'
+require_relative 'rules/impossible_travel'
+require_relative 'rules/low_and_slow_brute_force'
 
 module LogSentry
   class Engine
     RULE_CLASSES = {
-      'brute_force'         => Rules::BruteForce,
-      'credential_stuffing' => Rules::CredentialStuffing,
-      'flood'               => Rules::Flood,
-      'path_scan'           => Rules::PathScan,
-      'sqli'                => Rules::Sqli,
-      'xss'                 => Rules::Xss,
-      'scanner'             => Rules::Scanner,
-      'threat_intel'        => Rules::ThreatIntel
+      'brute_force'              => Rules::BruteForce,
+      'credential_stuffing'      => Rules::CredentialStuffing,
+      'flood'                    => Rules::Flood,
+      'path_scan'                => Rules::PathScan,
+      'sqli'                     => Rules::Sqli,
+      'xss'                      => Rules::Xss,
+      'scanner'                  => Rules::Scanner,
+      'threat_intel'             => Rules::ThreatIntel,
+      'impossible_travel'        => Rules::ImpossibleTravel,
+      'low_and_slow_brute_force' => Rules::LowAndSlowBruteForce
     }.freeze
 
     DEFAULT_COOLDOWN = 120
@@ -72,7 +76,7 @@ module LogSentry
     #  saldirida sayaclar sifirlanir ya da ayni alarm tekrar duser -- ki bunu
     #  canli testte bizzat gorduk. Ayari aynen duran bir kuralin hafizasini
     #  atmak icin hicbir sebep yok.
-    def self.from_config(config, reuse: nil)
+    def self.from_config(config, reuse: nil, store: nil)
       config = YAML.load_file(config) if config.is_a?(String)
 
       global_cooldown = config['cooldown'] || DEFAULT_COOLDOWN
@@ -84,23 +88,14 @@ module LogSentry
 
         klass = RULE_CLASSES[name]
 
-        # Bilinmeyen kural adi -> BASLANGICTA patla.
-        #
-        # Neden sessizce yok saymiyoruz? Cunku en olasi senaryo yapilandirma
-        # dosyasinda yazim hatasi ("brute_fore"). Sessizce yok sayarsak
-        # servis sorunsuz baslar, ama o kural HIC CALISMAZ ve bunu aylarca
-        # fark etmezsin. Gece 3'te alarm uretmesi gereken bir servis, eksik
-        # yapilandirmayla sessizce baslamamalidir.
         unless klass
           raise ArgumentError,
                 "bilinmeyen kural: #{name.inspect} " \
                 "(gecerli: #{RULE_CLASSES.keys.join(', ')})"
         end
 
-        fresh = build_rule(klass, opts, global_cooldown)
+        fresh = build_rule(klass, opts, global_cooldown, store)
 
-        # Ayari birebir ayni olan bir kural onceki motorda varsa, YENISINI
-        # ATIP ESKISINI kullaniyoruz. Boylece pencereler ve sogutma korunur.
         existing = reuse&.rules&.find { |r| r.signature == fresh.signature }
         existing || fresh
       end
@@ -112,14 +107,12 @@ module LogSentry
         user_agents: allow['user_agents'] || []
       )
 
-      # Sicak yenilemede allowlist de tazeleniyor -- kural esikleri gibi,
-      # muafiyet listesi de servisi durdurmadan degistirilebilmeli.
       new(rules: rules, allowlist: allowlist)
     end
 
     KNOWN_RULE_OPTIONS = %w[enabled window threshold cooldown statuses paths severity group_by_subnet blacklist agents].freeze
 
-    def self.build_rule(klass, opts, global_cooldown)
+    def self.build_rule(klass, opts, global_cooldown, store)
       unknown_keys = opts.keys - KNOWN_RULE_OPTIONS
       unless unknown_keys.empty?
         raise ArgumentError, "bilinmeyen kural secenegi: #{unknown_keys.first.inspect}"
@@ -131,13 +124,13 @@ module LogSentry
         cooldown:  Integer(opts['cooldown'] || global_cooldown)
       }
 
-      # Kurala ozel, istege bagli ayarlar.
       kwargs[:statuses]        = opts['statuses']          if opts['statuses']
       kwargs[:paths]           = opts['paths']             if opts['paths']
       kwargs[:severity]        = opts['severity'].to_sym   if opts['severity']
       kwargs[:group_by_subnet] = opts['group_by_subnet'] if opts.key?('group_by_subnet')
       kwargs[:blacklist]       = opts['blacklist']       if opts['blacklist']
       kwargs[:agents]          = opts['agents']          if opts['agents']
+      kwargs[:store]           = store                   if klass.instance_method(:initialize).parameters.any? { |p| p[1] == :store }
 
       klass.new(**kwargs)
     end

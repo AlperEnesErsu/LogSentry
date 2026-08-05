@@ -158,6 +158,12 @@ module LogSentry
           key   TEXT PRIMARY KEY,
           value TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS threat_intel (
+          ip       TEXT PRIMARY KEY,
+          source   TEXT NOT NULL,
+          added_at INTEGER NOT NULL
+        );
       SQL
 
       # ----------------------------------------------------------------------
@@ -179,6 +185,7 @@ module LogSentry
         CREATE INDEX IF NOT EXISTS idx_alerts_ts        ON alerts(ts);
         CREATE INDEX IF NOT EXISTS idx_alerts_ip_ts     ON alerts(ip, ts);
         CREATE INDEX IF NOT EXISTS idx_alerts_rule_ts   ON alerts(rule, ts);
+        CREATE INDEX IF NOT EXISTS idx_threat_intel_ip  ON threat_intel(ip);
       SQL
 
       @db.execute('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)',
@@ -277,6 +284,27 @@ module LogSentry
     end
 
     # ========================================================================
+    #  TEHDIT ISTIHBARATI (THREAT INTEL)
+    # ========================================================================
+    def add_threat_ip(ip, source)
+      @db.execute('INSERT OR REPLACE INTO threat_intel (ip, source, added_at) VALUES (?, ?, ?)',
+                  [ip, source.to_s, Time.now.to_i])
+    end
+
+    def threat_ip?(ip)
+      row = @db.execute('SELECT 1 FROM threat_intel WHERE ip = ?', [ip]).first
+      !row.nil?
+    end
+
+    def clear_threat_intel!(source: nil)
+      if source
+        @db.execute('DELETE FROM threat_intel WHERE source = ?', [source.to_s])
+      else
+        @db.execute('DELETE FROM threat_intel')
+      end
+    end
+
+    # ========================================================================
     #  OKUMA -- hepsi PARAMETRELI sorgu
     # ========================================================================
     #  Asagidaki her sorguda deger, SQL metnine YAPISTIRILMIYOR; ? ile
@@ -337,9 +365,10 @@ module LogSentry
         values << Integer(status)
       end
       if path_like
-        # LIKE kaliplarinda da deger parametre olarak gidiyor.
-        clauses << 'path LIKE ?'
-        values << "%#{path_like}%"
+        # LIKE joker karakterlerini (\ ve _ ve %) kacisla
+        escaped = path_like.to_s.gsub('\\', '\\\\\\\\').gsub('_', '\\_').gsub('%', '\\%')
+        clauses << "path LIKE ? ESCAPE '\\'"
+        values << "%#{escaped}%"
       end
       if from
         clauses << 'ts >= ?'
@@ -355,6 +384,37 @@ module LogSentry
 
       @db.execute(sql, values + [limit, offset]).map { |row| row_to_event(row) }
     end
+
+    def count_events(ip: nil, status: nil, path_like: nil, from: nil, to: nil)
+      clauses = []
+      values  = []
+
+      if ip
+        clauses << 'ip = ?'
+        values << ip
+      end
+      if status
+        clauses << 'status = ?'
+        values << Integer(status)
+      end
+      if path_like
+        escaped = path_like.to_s.gsub('\\', '\\\\\\\\').gsub('_', '\\_').gsub('%', '\\%')
+        clauses << "path LIKE ? ESCAPE '\\'"
+        values << "%#{escaped}%"
+      end
+      if from
+        clauses << 'ts >= ?'
+        values << from.to_i
+      end
+      if to
+        clauses << 'ts <= ?'
+        values << to.to_i
+      end
+
+      where = clauses.empty? ? '' : "WHERE #{clauses.join(' AND ')}"
+      @db.execute("SELECT COUNT(*) FROM events #{where}", values).first.first
+    end
+
 
     # Dashboard grafigi icin: saat bazinda istek ve hata sayilari.
     #

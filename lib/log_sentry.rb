@@ -59,23 +59,25 @@ module LogSentry
 
       @log_path = configured_path && File.expand_path(configured_path)
 
-      # Parser artik yapilandirmadan kuruluyor: LB arkasindaki kurulumlarda
-      # hem log formati hem de gercek istemci adresinin nasil bulunacagi
-      # degisiyor (bkz. config/logsentry.yml -> log_format / trusted_proxies).
+      # GeoIP custom ranges load
+      if config['geoip'] && config['geoip']['custom_ranges']
+        require_relative 'log_sentry/enrichers/geoip'
+        LogSentry::Enrichers::GeoIP.load_ranges(config['geoip']['custom_ranges'])
+      end
+
+      @store = build_store(config)
+
       @parser = Parser.new(
         format:          (config['log_format'] || 'combined').to_sym,
         trusted_proxies: config['trusted_proxies'] || []
       )
-      @engine = Engine.from_config(config)
-
-      # Depolama istege bagli: yapilandirmada storage yoksa Store hic
-      # kurulmaz ve sqlite3 gem'i bile yuklenmez. Adim 1-5 boyunca
-      # kurdugumuz "sifir bagimlilik" ozelligini korumak icin require
-      # dosyanin basinda degil, BURADA (ihtiyac aninda) yapiliyor.
-      @store = build_store(config)
+      @engine = Engine.from_config(config, store: @store)
 
       @notifiers = build_notifiers(config)
       @last_flush = Time.now
+
+      @alert_queue = Queue.new
+      @notifier_thread = Thread.new { run_notifier_loop }
 
       # ----------------------------------------------------------------------
       #  TEK DOSYA MI, KALIP MI?
@@ -264,13 +266,21 @@ module LogSentry
       end
     end
 
-    # Bir alarmi TUM kanallara gonder.
-    #
-    # Dikkat: notifier.notify kendi icinde hata yakaliyor (Notifiers::Base).
-    # Yani bir kanalin cokmesi digerlerini engellemez. Telegram erisilemez
-    # olsa bile alarm hala dosyaya yazilir ve ekrana basilir.
     def dispatch(alert)
-      @notifiers.each { |notifier| notifier.notify(alert) }
+      @alert_queue << alert
+    end
+
+    def run_notifier_loop
+      loop do
+        alert = @alert_queue.pop
+        break if alert == :stop
+
+        @notifiers.each do |notifier|
+          notifier.notify(alert)
+        end
+      end
+    rescue StandardError => e
+      warn "[Supervisor] Notifier loop hatasi: #{e.message}"
     end
 
     # ------------------------------------------------------------------------
@@ -353,6 +363,12 @@ module LogSentry
 
     def shutdown
       log 'kapaniyor...'
+
+      if @alert_queue
+        @alert_queue << :stop
+        @notifier_thread&.join
+      end
+
       # Tamponlari bosalt, dosyalari kapat. Nazik kapanmanin anlami budur:
       # elindeki isi kaybetmeden birak.
       @notifiers.each(&:close)

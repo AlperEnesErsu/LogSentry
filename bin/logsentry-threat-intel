@@ -1,0 +1,111 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# ============================================================================
+#  bin/logsentry-threat-intel: Tehdit istihbaratı dinamik IP beslemelerini günceller
+# ----------------------------------------------------------------------------
+#  Bu betik cron ile çalışacak şekilde tasarlanmıştır. Örnek olarak Tor çıkış
+#  düğümleri (Exit Nodes) listesini çekip SQLite veritabanına kaydeder.
+#
+#  CRON TANIMI (Her gün saat 02:00):
+#    0 2 * * * cd /opt/logsentry && bin/logsentry-threat-intel >> logs/threat_intel.log 2>&1
+# ============================================================================
+
+require 'optparse'
+require 'yaml'
+require 'net/http'
+require 'uri'
+require 'ipaddr'
+
+lib_path = File.expand_path('../lib', __dir__)
+lib_path = File.expand_path('./lib') unless File.exist?(File.join(lib_path, 'log_sentry.rb'))
+$LOAD_PATH.unshift(lib_path) unless $LOAD_PATH.include?(lib_path)
+
+require 'log_sentry/store'
+
+root_dir = File.expand_path('..', __dir__)
+root_dir = Dir.pwd unless File.exist?(File.join(root_dir, 'config', 'logsentry.yml'))
+ROOT = root_dir
+
+options = {
+  config: File.join(ROOT, 'config', 'logsentry.yml'),
+  source: 'https://check.torproject.org/torbulkexitlist',
+  clear: false
+}
+
+OptionParser.new do |o|
+  o.banner = 'kullanim: bin/logsentry-threat-intel [secenekler]'
+
+  o.on('-c', '--config PATH', 'yapilandirma dosyasi') { |v| options[:config] = File.expand_path(v) }
+  o.on('-s', '--source URL', 'tehdit IP kaynak adresi') { |v| options[:source] = v }
+  o.on('--clear', 'tehdit veritabanini bosalt') { options[:clear] = true }
+  o.on('-h', '--help', 'yardim') do
+    puts o
+    exit 0
+  end
+end.parse!
+
+abort "HATA: Yapilandirma dosyasi bulunamadi: #{options[:config]}" unless File.exist?(options[:config])
+config = YAML.load_file(options[:config])
+Dir.chdir(ROOT)
+
+storage = config['storage']
+abort 'HATA: Yapilandirmada depolama (storage) tanimlanmamis!' unless storage && storage['database']
+
+db_path = File.expand_path(storage['database'])
+puts "Veritabanina baglaniliyor: #{db_path}"
+store = LogSentry::Store.new(path: db_path)
+
+if options[:clear]
+  puts 'Tehdit veritabani temizleniyor...'
+  store.clear_threat_intel!
+  puts 'Temizlendi.'
+  store.close
+  exit 0
+end
+
+puts "Tehdit beslemesi indiriliyor: #{options[:source]}"
+
+begin
+  uri = URI(options[:source])
+  req = Net::HTTP::Get.new(uri)
+  req['User-Agent'] = 'LogSentry-ThreatIntel-Fetcher'
+
+  response = Net::HTTP.start(uri.hostname, uri.port, use_ssl: (uri.scheme == 'https'), open_timeout: 10, read_timeout: 10) do |http|
+    http.request(req)
+  end
+
+  unless response.is_a?(Net::HTTPSuccess)
+    abort "HATA: Istek basarisiz oldu. HTTP Kodu: #{response.code}"
+  end
+
+  ips = []
+  response.body.each_line do |line|
+    line = line.strip
+    next if line.empty? || line.start_with?('#')
+
+    # Geçerli bir IP adresi olup olmadığını doğrula
+    begin
+      IPAddr.new(line)
+      ips << line
+    rescue IPAddr::InvalidAddressError
+      next
+    end
+  end
+
+  puts "Toplam #{ips.size} gecerli IP adresi ayristirildi."
+
+  # Tor çıkış düğümlerini güncelle
+  store.db.transaction do
+    store.clear_threat_intel!(source: 'tor')
+    ips.each do |ip|
+      store.add_threat_ip(ip, 'tor')
+    end
+  end
+
+  puts "Basariyla #{ips.size} IP adresi veritabanina kaydedildi."
+rescue StandardError => e
+  abort "HATA: Islemler sirasinda bir sorun olustu: #{e.message}"
+ensure
+  store&.close
+end

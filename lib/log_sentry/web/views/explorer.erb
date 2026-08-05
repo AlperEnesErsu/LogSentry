@@ -1,0 +1,87 @@
+<h1>Log Gezgini <small><%= number @total %> olay</small></h1>
+
+<form class="filters" method="get" action="/explorer">
+  <label>
+    Kaynak IP
+    <input type="text" name="ip" value="<%= h @filters[:ip] %>" placeholder="Örn: 45.155.205.233">
+  </label>
+
+  <label>
+    Durum Kodu
+    <input type="text" name="status" value="<%= h @filters[:status] %>" placeholder="Örn: 404" style="min-width: 80px; max-width: 100px;">
+  </label>
+
+  <label>
+    İstek Yolu (LIKE)
+    <input type="text" name="path_like" value="<%= h @filters[:path_like] %>" placeholder="Örn: /wp-admin">
+  </label>
+
+  <label>
+    Başlangıç Zamanı
+    <input type="text" name="from" value="<%= h @filters[:from] %>" placeholder="2026-08-01 12:00:00">
+  </label>
+
+  <label>
+    Bitiş Zamanı
+    <input type="text" name="to" value="<%= h @filters[:to] %>" placeholder="2026-08-05 23:59:59">
+  </label>
+
+  <div style="display: flex; gap: 8px;">
+    <button type="submit">Ara</button>
+    <a class="btn-plain" href="/explorer" style="align-self: center;">temizle</a>
+  </div>
+
+  <% unless @events.empty? %>
+    <a class="btn" href="<%= h page_url('/explorer', format: 'csv') %>" style="margin-left: auto; align-self: flex-end; padding: 7px 12px; font-weight: 600;">CSV İndir</a>
+  <% end %>
+</form>
+
+<% if @events.empty? %>
+  <p class="empty">Bu filtrelere uyan herhangi bir olay bulunamadı.</p>
+<% else %>
+  <table class="alerts">
+    <thead>
+      <tr>
+        <th>Zaman</th>
+        <th>Kaynak IP</th>
+        <th>Metot</th>
+        <th>Yol</th>
+        <th>Durum</th>
+        <th class="num">Bayt</th>
+        <th>User Agent</th>
+      </tr>
+    </thead>
+    <tbody>
+      <% @events.each do |e| %>
+        <tr class="<%= 'row-fail' if e[:status].to_i >= 500 %> <%= 'row-warn' if [401, 403].include?(e[:status].to_i) %>">
+          <td class="nowrap"><%= h time_fmt(e[:time]) %></td>
+          <td>
+            <a href="/ips/<%= h e[:ip] %>"><code><%= h e[:ip] %></code></a>
+            <small class="muted" style="margin-left: 4px;">(<%= h country_code(e[:ip]) %>)</small>
+          </td>
+          <td><code><%= h e[:method] %></code></td>
+          <td class="path"><code><%= h e[:path] %></code></td>
+          <td>
+            <span class="sev <%= e[:status].to_i >= 500 ? 'sev-critical' : ([401, 403].include?(e[:status].to_i) ? 'sev-high' : 'sev-low') %>">
+              <%= h e[:status] %>
+            </span>
+          </td>
+          <td class="num"><%= number e[:bytes] %></td>
+          <td class="ua" title="<%= h e[:user_agent] %>"><%= h e[:user_agent] %></td>
+        </tr>
+      <% end %>
+    </tbody>
+  </table>
+
+  <% if @pages > 1 %>
+    <nav class="pager">
+      <% if @page > 1 %>
+        <a href="<%= h page_url('/explorer', page: @page - 1) %>">← önceki</a>
+      <% end %>
+      <span>sayfa <%= @page %> / <%= @pages %></span>
+      <% if @page < @pages %>
+        <a href="<%= h page_url('/explorer', page: @page + 1) %>">sonraki →</a>
+      <% end %>
+    </nav>
+  <% end %>
+<% end %>

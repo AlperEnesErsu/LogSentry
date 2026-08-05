@@ -15,6 +15,7 @@
 require 'time'
 require 'ipaddr'
 require_relative 'entry'
+require_relative 'masker'
 
 module LogSentry
   class Parser
@@ -130,10 +131,35 @@ module LogSentry
       \s*
     \z}x
 
+    IIS = %r{\A
+      (?<date>\d{4}-\d{2}-\d{2})  \s+
+      (?<time>\d{2}:\d{2}:\d{2})  \s+
+      (?<ip>\S+)                  \s+
+      (?<method>[A-Z]+)           \s+
+      (?<path>\S+)                \s+
+      (?<status>\d{3})
+      (?:\s+(?<bytes>\d+|-))?
+      (?:\s+"(?<agent>[^"]*)"|\s+(?<agent>\S+))?
+      \s*
+    \z}x
+
+    SSH = %r{\A
+      (?<time>[A-Z][a-z]{2}\s+\d+\s+\d{2}:\d{2}:\d{2})  \s+
+      (?<hostname>\S+)                                  \s+
+      sshd\[\d+\]:                                     \s+
+      (?<message>.*?)                                   \s+
+      from\s+(?<ip>\S+)
+      (?:\s+port\s+(?<port>\d+))?
+      (?:\s+\S+)?
+      \s*
+    \z}x
+
     FORMATS = {
       combined:     COMBINED,
       combined_xff: COMBINED_XFF,
-      common:       COMMON
+      common:       COMMON,
+      iis:          IIS,
+      ssh:          SSH
     }.freeze
 
     # ========================================================================
@@ -243,19 +269,34 @@ module LogSentry
         return nil
       end
 
-      # Zaman damgasini gercek bir Time nesnesine cevir.
-      # BASARISIZ OLURSA satiri atiyoruz -- cunku zamansiz bir kayit
-      # kural motorumuz icin ISE YARAMAZ (tum kurallar zaman penceresi
-      # kullaniyor). Zamani olmayan olayin "son 60 saniyede" olup
-      # olmadigini bilemeyiz.
-      time = parse_time(match[:time])
+      time_str = if match.names.include?('date') && match.names.include?('time')
+                   "#{match[:date]} #{match[:time]}"
+                 else
+                   match[:time]
+                 end
+
+      time = parse_time(time_str)
       unless time
-        record_failure(line, "zaman ayristirilamadi: #{match[:time]}")
+        record_failure(line, "zaman ayristirilamadi: #{time_str}")
         return nil
       end
 
-      # Istek satirini ikinci asamada parcala.
-      request = parse_request(match[:request])
+      if match.names.include?('request') && match[:request]
+        request = parse_request(match[:request])
+        http_method = request[:http_method]
+        path        = request[:path]
+        protocol    = request[:protocol]
+      else
+        http_method = match.names.include?('method') ? match[:method] : 'POST'
+        path        = if match.names.include?('path')
+                        match[:path]
+                      elsif @format == :ssh
+                        '/ssh/login'
+                      else
+                        '-'
+                      end
+        protocol    = match.names.include?('protocol') ? match[:protocol] : 'HTTP/1.1'
+      end
 
       @parsed_count += 1
 
@@ -263,21 +304,43 @@ module LogSentry
       forwarded_for = capture(match, :forwarded_for)
       client_ip     = resolve_client_ip(remote_addr, forwarded_for)
 
+      status = if match.names.include?('status')
+                 match[:status].to_i
+               elsif match.names.include?('message')
+                 match[:message].include?('Failed') ? 401 : 200
+               else
+                 200
+               end
+
+      bytes_val = match.names.include?('bytes') ? match[:bytes] : nil
+      bytes = parse_bytes(bytes_val)
+
+      referer = capture(match, :referer)
+      user_agent = if match.names.include?('agent')
+                     capture(match, :agent)
+                   elsif match.names.include?('message')
+                     'sshd'
+                   else
+                     nil
+                   end
+
+      masked_path    = LogSentry::Masker.mask(path)
+      masked_referer = referer ? LogSentry::Masker.mask(referer) : nil
+      masked_raw     = @keep_raw ? LogSentry::Masker.mask(line) : nil
+
       Entry.new(
         ip:            client_ip,
-        # Istemci LB'den farkliysa araya giren adresi de sakliyoruz:
-        # "hangi LB uzerinden geldi" sorusu olay incelemesinde ise yarar.
         proxy_ip:      (remote_addr unless client_ip == remote_addr),
         forwarded_for: forwarded_for,
-        time:        time,
-        http_method: request[:http_method],
-        path:        request[:path],
-        protocol:    request[:protocol],
-        status:      match[:status].to_i,        # "401" -> 401  (METIN -> SAYI)
-        bytes:       parse_bytes(match[:bytes]),
-        referer:     capture(match, :referer),
-        user_agent:  capture(match, :agent),
-        raw:         @keep_raw ? line : nil
+        time:          time,
+        http_method:   http_method,
+        path:          masked_path,
+        protocol:      protocol,
+        status:        status,
+        bytes:         bytes,
+        referer:       masked_referer,
+        user_agent:    user_agent,
+        raw:           masked_raw
       )
     end
 
@@ -395,12 +458,16 @@ module LogSentry
     TIME_FORMAT = '%d/%b/%Y:%H:%M:%S %z'
 
     def parse_time(str)
-      Time.strptime(str, TIME_FORMAT)
-    rescue ArgumentError, TypeError
-      # rescue = "hata olursa cokmek yerine sunu yap".
-      # Metod govdesinin tamamini kapsayan rescue yazabilmek Ruby'ye ozgu
-      # ve okunakli bir kolayliktir (begin/end yazmaya gerek yok).
-      nil
+      begin
+        return Time.strptime(str, TIME_FORMAT)
+      rescue ArgumentError, TypeError
+      end
+
+      begin
+        Time.parse(str)
+      rescue StandardError
+        nil
+      end
     end
 
     # "POST /login HTTP/1.1"  ->  { http_method: "POST", path: "/login", ... }
@@ -481,7 +548,13 @@ module LogSentry
         protocol    = hash['protocol']
       end
 
-      status  = (hash['status'] || hash['status_code'] || 200).to_i
+      status_val = hash['status'] || hash['status_code']
+      if status_val.nil?
+        record_failure(line, 'JSON icinde status eksik')
+        return nil
+      end
+      status = status_val.to_i
+
       bytes   = (hash['bytes'] || hash['body_bytes_sent'] || hash['size'] || 0).to_i
       referer = hash['referer'] || hash['http_referer']
       agent   = hash['user_agent'] || hash['http_user_agent'] || hash['agent']

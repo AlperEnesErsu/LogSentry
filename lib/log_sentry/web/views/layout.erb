@@ -23,6 +23,7 @@
     <nav>
       <a href="/"          class="<%= request.path == '/' ? 'active' : '' %>">Dashboard</a>
       <a href="/alerts"    class="<%= request.path.start_with?('/alerts') ? 'active' : '' %>">Uyarılar</a>
+      <a href="/explorer"  class="<%= request.path.start_with?('/explorer') ? 'active' : '' %>">Log Gezgini</a>
       <a href="/integrity" class="<%= request.path == '/integrity' ? 'active' : '' %>">Bütünlük</a>
     </nav>
   </header>

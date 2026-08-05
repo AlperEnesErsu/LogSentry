@@ -508,4 +508,57 @@ class WebTest < Minitest::Test
     assert_includes res.body, 'logsentry_alerts_total'
     assert_includes res.body, 'logsentry_events_total'
   end
+
+  # ==========================================================================
+  #  PR 1 -- EXPLORER VE IP DETAY TESTLERI
+  # ==========================================================================
+
+  def test_explorer_acilir_ve_filtreler_calisir
+    add_event(ip: '192.168.1.50', status: 404, path: '/wp-admin')
+    add_event(ip: '10.0.0.5', status: 200, path: '/home')
+
+    res = get('/explorer')
+    assert_equal 200, res.status
+    assert_includes res.body, 'Log Gezgini'
+    assert_includes res.body, '192.168.1.50'
+    assert_includes res.body, '10.0.0.5'
+
+    # IP filtresi
+    res_ip = get('/explorer?ip=192.168.1.50')
+    assert_includes res_ip.body, '192.168.1.50'
+    refute_includes res_ip.body, '10.0.0.5'
+
+    # Durum kodu filtresi
+    res_status = get('/explorer?status=404')
+    assert_includes res_status.body, '/wp-admin'
+    refute_includes res_status.body, '/home'
+
+    # Yol filtresi
+    res_path = get('/explorer?path_like=wp-admin')
+    assert_includes res_path.body, '192.168.1.50'
+    refute_includes res_path.body, '/home'
+  end
+
+  def test_explorer_csv_formatini_destekler
+    add_event(ip: '10.0.0.99', status: 200, path: '/download')
+
+    res = get('/explorer?format=csv')
+    assert_equal 200, res.status
+    assert_match(%r{\Atext/csv}, res.headers['Content-Type'])
+    assert_includes res.body, '10.0.0.99'
+    assert_includes res.body, '/download'
+    assert_includes res.body, 'Zaman;Kaynak IP;Metot;Yol;Durum Kodu;Bayt;User Agent'
+  end
+
+  def test_ip_detay_sayfasi
+    add_event(ip: '8.8.8.8', status: 403, path: '/blocked')
+    add_alert(ip: '8.8.8.8', message: 'Şüpheli IP uyarısı')
+
+    res = get('/ips/8.8.8.8')
+    assert_equal 200, res.status
+    assert_includes res.body, 'IP Profili'
+    assert_includes res.body, '8.8.8.8'
+    assert_includes res.body, '/blocked'
+    assert_includes res.body, 'Şüpheli IP uyarısı'
+  end
 end
