@@ -135,6 +135,25 @@ app.set :auth_exempt_paths,
 # ortam degiskeninden okunur -- yapilandirma dosyasi git'e girer.
 app.set :metrics_token, ENV['LOGSENTRY_METRICS_TOKEN']
 
+# ----------------------------------------------------------------------------
+#  HIZ SINIRI (RATE LIMIT)
+# ----------------------------------------------------------------------------
+#  Bu blok EKSIKTI. app.rb icinde limiter kodu vardi, yapilandirmadan
+#  okunmuyordu -- yani `rate_limit_enabled` uretimde HER ZAMAN false
+#  kaliyordu ve ozellik yalnizca testlerde calisiyordu. Kod yazilmis olmasi
+#  ozelligin ACIK oldugu anlamina gelmiyor; kablolamasi da yapilmali.
+#
+#  Sayac anahtari icin trusted_proxies gerekiyor: XFF'e korlemesine
+#  guvenen bir sinir, atlanabilir olmasinin yani sira masum kullanicilari
+#  limitlemek icin de kullanilabilir. (bkz. lib/log_sentry/client_ip.rb)
+# ----------------------------------------------------------------------------
+rl_cfg = web_cfg['rate_limit'] || {}
+app.set :rate_limit_enabled, rl_cfg.fetch('enabled', true)
+app.set :rate_limit_max,     rl_cfg.fetch('max', 120)
+app.set :rate_limit_window,  rl_cfg.fetch('window', 60)
+app.set :trusted_proxies,
+        LogSentry::ClientIP.build_ranges(config['trusted_proxies'], source: 'web')
+
 # Puma: thread'li bir sunucu. SSE icin SART -- her canli akis baglantisi bir
 # thread'i uzun sure mesgul tutar. Tek thread'li bir sunucuda (ornegin
 # WEBrick'in varsayilan kipi) ILK SSE baglantisi tum sunucuyu kilitler ve

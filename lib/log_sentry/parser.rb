@@ -16,6 +16,7 @@ require 'time'
 require 'ipaddr'
 require_relative 'entry'
 require_relative 'masker'
+require_relative 'client_ip'
 
 module LogSentry
   class Parser
@@ -205,7 +206,7 @@ module LogSentry
     #   sebebi asagida, resolve_client_ip).
     def initialize(format: :combined, keep_raw: true, trusted_proxies: [])
       @format          = format.to_sym
-      @trusted_proxies = build_trusted_proxies(trusted_proxies)
+      @trusted_proxies = ClientIP.build_ranges(trusted_proxies, source: 'parser')
       if @format == :json
         @pattern = :json
       else
@@ -411,39 +412,18 @@ module LogSentry
     #  "yanlis IP'yi engellemek" yerine "vekilin IP'sini gormek" daha az
     #  zararlidir.
     # ========================================================================
+    #  NOT: mantigin kendisi lib/log_sentry/client_ip.rb icine tasindi.
+    #  Sebep: web arayuzunun hiz siniri da ayni soruyu soruyor ("bu istek
+    #  gercekten kimden geldi?") ve orada Rack'in `request.ip`'i
+    #  kullaniliyordu -- o ise X-Forwarded-For'a KIM YAZDIGINA bakmadan
+    #  guveniyor. Iki farkli cevap veren iki kod yolu birakmak yerine tek
+    #  kaynak birakildi.
     def resolve_client_ip(remote_addr, forwarded_for)
-      return remote_addr if @trusted_proxies.empty?
-      return remote_addr if forwarded_for.nil? || forwarded_for.strip.empty?
-      return remote_addr if forwarded_for == '-'
-
-      # Tam zincir: XFF listesi + en sonda bize baglanan adres.
-      chain = forwarded_for.split(',').map(&:strip).reject(&:empty?)
-      chain << remote_addr
-
-      # Sagdan sola: guvenilir vekilleri atla, ilk guvenilmeyeni al.
-      client = chain.reverse.find { |addr| !trusted_proxy?(addr) }
-
-      # Zincirdeki herkes bizim vekilimizse (ic trafik) en soldakini al.
-      client || chain.first
+      ClientIP.resolve(remote_addr, forwarded_for, @trusted_proxies)
     end
 
     def trusted_proxy?(address)
-      ip = IPAddr.new(address)
-      @trusted_proxies.any? { |range| range.include?(ip) }
-    rescue IPAddr::InvalidAddressError, ArgumentError
-      # Gecerli bir IP degilse guvenilir SAYMA. XFF'e cop yazmak, zincir
-      # yurumesini bozmaya calismanin bilinen bir yoludur.
-      false
-    end
-
-    def build_trusted_proxies(list)
-      Array(list).filter_map do |cidr|
-        IPAddr.new(cidr.to_s)
-      rescue IPAddr::InvalidAddressError, ArgumentError
-        # Yapilandirma hatasi sessizce yutulmasin.
-        warn "[parser] gecersiz trusted_proxies girdisi yok sayildi: #{cidr.inspect}"
-        nil
-      end
+      ClientIP.trusted?(address, @trusted_proxies)
     end
 
     # Nginx zaman formati: 29/Jul/2026:14:39:25 +0300

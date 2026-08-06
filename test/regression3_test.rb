@@ -102,6 +102,36 @@ class Regression3Test < Minitest::Test
   end
 
   # ==========================================================================
+  #  2b) Web ayarlari YAPILANDIRMADAN okunuyor mu?
+  # --------------------------------------------------------------------------
+  #  Yasanan ariza: app.rb icinde eksiksiz bir hiz siniri (rate limiter)
+  #  vardi, testleri de gecıyordu -- ama bin/logsentry-web onu YAML'dan hic
+  #  okumuyordu. Sonuc: `rate_limit_enabled` uretimde HER ZAMAN false kaldi
+  #  ve ozellik yalnizca test ortaminda calisti. Kimse fark etmedi cunku
+  #  "kod var ve testi geciyor" ile "ozellik acik" ayni sey saniliyordu.
+  #
+  #  Bu test o sinif hatayi yakalar: bir ayarin hem app.rb'de tanimli hem
+  #  bin/logsentry-web'de kablolanmis olmasini sart kosar.
+  # ==========================================================================
+  def test_web_ayarlari_yapilandirmadan_kablolaniyor
+    launcher = File.read(File.join(ROOT, 'bin', 'logsentry-web'))
+
+    %w[rate_limit_enabled rate_limit_max rate_limit_window trusted_proxies].each do |ayar|
+      assert_match(/app\.set\s+:#{ayar}\b/, launcher,
+                   "#{ayar} app.rb'de tanimli ama bin/logsentry-web onu " \
+                   'yapilandirmadan okumuyor -- ozellik uretimde olu kalir.')
+    end
+  end
+
+  def test_hiz_siniri_yapilandirmada_belgelenmis
+    yml = File.read(File.join(ROOT, 'config', 'logsentry.yml'))
+
+    assert_match(/^\s+rate_limit:/, yml,
+                 'web.rate_limit blogu yapilandirmada yok -- operatorun ' \
+                 'ozelligin varligindan haberi olmaz.')
+  end
+
+  # ==========================================================================
   #  3) Parser'in iki yolu farkli katiliktA
   # --------------------------------------------------------------------------
   #  combined: status alani yoksa satiri REDDEDIYOR (dogru -- durum kodu

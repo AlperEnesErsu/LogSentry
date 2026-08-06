@@ -319,6 +319,29 @@ web:
   page_size: 50               # listelerde sayfa basina kayit
   live_stream: true           # SSE ile canli akis
 
+  # --- Hiz siniri (rate limit) ---------------------------------------------
+  #  IP basina <window> saniyede en fazla <max> istek. Asilirsa 429 doner.
+  #
+  #  Neden acik varsayilan? Panel varsayilan olarak yalnizca localhost'u
+  #  dinliyor, orada sinirin bir maliyeti yok. Ama birileri --bind 0.0.0.0
+  #  yazdiginda korumanin ZATEN acik olmasi gerekiyor -- guvenlik ayarlari
+  #  "ihtiyac olunca acilir" mantigiyla calismaz, cunku ihtiyac ortaya
+  #  ciktiginda kimse ayara bakmiyor.
+  #
+  #  Esigi belirlerken: bir sayfa yuklemesi ~3 istek (HTML + CSS + JS),
+  #  SSE akisi ise TEK bir uzun baglanti (her mesaj yeni istek degil).
+  #  120/dk normal bir kullaniciya rahat yeter.
+  #
+  #  Sayac anahtari, yukaridaki `trusted_proxies` listesine gore belirlenir.
+  #  Liste bos ise X-Forwarded-For yok sayilir ve dogrudan baglanan adres
+  #  kullanilir -- vekil arkasindaysan o listeyi doldurmayi UNUTMA, yoksa
+  #  butun trafik tek bir IP (vekilin IP'si) gibi gorunur ve limiti hemen
+  #  doldurur.
+  rate_limit:
+    enabled: true
+    max: 120                  # <window> saniyede izin verilen istek sayisi
+    window: 60                # saniye
+
   # Rol Tabanlı Yetkilendirme (RBAC) Ayarları
   auth:
     enabled: false             # true yapılarak aktif edilebilir (ya da env üzerinden)

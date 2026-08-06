@@ -63,8 +63,8 @@ class WebTest < Minitest::Test
     nil
   end
 
-  def get(path)
-    @request.get(path, lint: false)
+  def get(path, env = {})
+    @request.get(path, env.merge(lint: false))
   end
 
   def add_event(ip: '1.2.3.4', status: 200, path: '/', at: T0, agent: 'Chrome')
@@ -499,6 +499,75 @@ class WebTest < Minitest::Test
   ensure
     LogSentry::Web::App.set :rate_limit_enabled, false
     LogSentry::Web::App::RATE_LIMIT_STORE.clear
+  end
+
+  # ==========================================================================
+  #  HIZ SINIRI -- SAYAC ANAHTARI SPOOF EDILEMEZ
+  # --------------------------------------------------------------------------
+  #  Limiter onceki halinde Rack'in `request.ip`'ini kullaniyordu; o ise
+  #  X-Forwarded-For'a basligi KIMIN yazdigina bakmadan guveniyor. Bu, siniri
+  #  iki yonden ise yaramaz hale getiriyordu:
+  #    1) saldirgan her istekte farkli XFF yazip siniri atlar
+  #    2) baskasinin IP'sini yazip MASUM birini limitletir
+  #  Yani koruma araci, hizmet disi birakma aracina donusuyordu.
+  # ==========================================================================
+
+  def test_rate_limit_xff_ile_atlanamaz
+    LogSentry::Web::App.set :rate_limit_enabled, true
+    LogSentry::Web::App.set :rate_limit_max, 2
+    LogSentry::Web::App.set :rate_limit_window, 60
+    LogSentry::Web::App.set :trusted_proxies, []   # vekil tanimli degil
+    LogSentry::Web::App.reset_rate_limit!
+
+    # Ayni istemci, her istekte FARKLI bir uydurma XFF gonderiyor.
+    assert_equal 200, get('/', 'HTTP_X_FORWARDED_FOR' => '1.1.1.1').status
+    assert_equal 200, get('/', 'HTTP_X_FORWARDED_FOR' => '2.2.2.2').status
+    res = get('/', 'HTTP_X_FORWARDED_FOR' => '3.3.3.3')
+
+    assert_equal 429, res.status,
+                 'XFF degistirerek hiz siniri atlanabilmemeli'
+  ensure
+    LogSentry::Web::App.set :rate_limit_enabled, false
+    LogSentry::Web::App.reset_rate_limit!
+  end
+
+  def test_rate_limit_masum_ip_baskasi_tarafindan_limitlenemez
+    LogSentry::Web::App.set :rate_limit_enabled, true
+    LogSentry::Web::App.set :rate_limit_max, 2
+    LogSentry::Web::App.set :rate_limit_window, 60
+    LogSentry::Web::App.set :trusted_proxies, []
+    LogSentry::Web::App.reset_rate_limit!
+
+    # Saldirgan, kurbanin IP'sini yazarak onun sayacini doldurmaya calisiyor.
+    3.times { get('/', 'HTTP_X_FORWARDED_FOR' => '203.0.113.99') }
+
+    # Sayac saldirganin GERCEK adresine yazilmali; kurbanin adresi temiz
+    # kalmali. (Sayac zaten dolduysa 429 gelir -- onemli olan kurbanin
+    # anahtarinin hic olusmamis olmasi.)
+    refute LogSentry::Web::App::RATE_LIMIT_STORE.key?('203.0.113.99'),
+           'baskasinin IP adresine sayac yazilmamali'
+  ensure
+    LogSentry::Web::App.set :rate_limit_enabled, false
+    LogSentry::Web::App.reset_rate_limit!
+  end
+
+  def test_rate_limit_guvenilir_vekil_arkasinda_gercek_istemciyi_kullanir
+    LogSentry::Web::App.set :rate_limit_enabled, true
+    LogSentry::Web::App.set :rate_limit_max, 100
+    LogSentry::Web::App.set :rate_limit_window, 60
+    # Rack::MockRequest varsayilan REMOTE_ADDR degeri: 127.0.0.1
+    LogSentry::Web::App.set :trusted_proxies,
+                            LogSentry::ClientIP.build_ranges(['127.0.0.0/8'])
+    LogSentry::Web::App.reset_rate_limit!
+
+    get('/', 'HTTP_X_FORWARDED_FOR' => '45.155.205.233')
+
+    assert LogSentry::Web::App::RATE_LIMIT_STORE.key?('45.155.205.233'),
+           'guvenilir vekil arkasinda sayac GERCEK istemciye yazilmali'
+  ensure
+    LogSentry::Web::App.set :rate_limit_enabled, false
+    LogSentry::Web::App.set :trusted_proxies, []
+    LogSentry::Web::App.reset_rate_limit!
   end
 
   def test_prometheus_metrics_endpoint

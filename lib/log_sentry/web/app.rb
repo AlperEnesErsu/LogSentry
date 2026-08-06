@@ -28,6 +28,7 @@ require_relative '../store'
 require_relative '../archiver'
 require_relative '../tailer'
 require_relative '../enrichers/geoip'
+require_relative '../client_ip'
 
 module LogSentry
   module Web
@@ -52,6 +53,11 @@ module LogSentry
       set :rate_limit_max, 60
       set :rate_limit_window, 60
       set :page_size, 50
+
+      # Hiz siniri sayaci hangi adrese yazilacak? Bos ise X-Forwarded-For
+      # HIC dikkate alinmaz ve dogrudan baglanan adres kullanilir.
+      # (Neden: lib/log_sentry/client_ip.rb basindaki aciklama.)
+      set :trusted_proxies, []
 
       # ======================================================================
       #  KIMLIK DOGRULAMASINDAN MUAF YOLLAR
@@ -116,9 +122,14 @@ module LogSentry
          end
        end
 
+       # Testler arasi sizinti olmasin diye: sayac SINIF seviyesinde tutuluyor,
+       # yani bir testte biriken istekler digerini etkiler.
+       def self.reset_rate_limit!
+         RATE_LIMIT_MUTEX.synchronize { RATE_LIMIT_STORE.clear }
+       end
+
       before do
         if settings.rate_limit_enabled
-          client_ip = request.ip
           unless self.class.check_rate_limit(client_ip, settings.rate_limit_max, settings.rate_limit_window)
             halt 429, { 'Content-Type' => 'text/plain', 'Retry-After' => settings.rate_limit_window.to_s },
                  "429 -- Cok Fazla Istek (Rate Limit Exceeded)\n"
@@ -147,6 +158,29 @@ module LogSentry
       end
 
       helpers do
+        # ====================================================================
+        #  client_ip -- hiz sinirinin sayac anahtari
+        # --------------------------------------------------------------------
+        #  Rack'in `request.ip`'ini KULLANMIYORUZ. O, X-Forwarded-For'a
+        #  basligi kimin yazdigina bakmadan guvenir. Hiz sinirini boyle bir
+        #  degere baglamak siniri hem ISE YARAMAZ hem de ZARARLI yapar:
+        #
+        #    * saldirgan her istekte farkli bir XFF yazip siniri atlar
+        #    * ustune, baskasinin IP'sini yazip MASUM birini limitletir
+        #      (yani sinir, bir hizmet disi birakma aracina donusur)
+        #
+        #  Dogrusu: yalnizca KENDI vekillerimizin (trusted_proxies) ekledigi
+        #  kisma guvenmek. Liste bos ise XFF'e hic bakilmaz -- dogrudan
+        #  baglanan adres kullanilir.
+        # ====================================================================
+        def client_ip
+          LogSentry::ClientIP.resolve(
+            request.env['REMOTE_ADDR'],
+            request.env['HTTP_X_FORWARDED_FOR'],
+            settings.trusted_proxies
+          ) || request.env['REMOTE_ADDR'].to_s
+        end
+
         # ====================================================================
         #  KIMLIK DOGRULAMA YARDIMCILARI
         # --------------------------------------------------------------------
@@ -363,7 +397,7 @@ module LogSentry
         repo  = payload.dig('repository', 'full_name') || 'unknown/repo'
 
         entry = LogSentry::Entry.new(
-          ip: request.ip || '127.0.0.1',
+          ip: client_ip.to_s.empty? ? '127.0.0.1' : client_ip,
           time: Time.now,
           http_method: 'POST',
           path: "/webhooks/github/#{event_type}",
