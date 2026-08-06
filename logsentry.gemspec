@@ -47,6 +47,13 @@ Gem::Specification.new do |spec|
   # depolama (adim 6) ve web arayuzu (adim 7) icin gerekli.
   spec.required_ruby_version = '>= 3.0'
 
+  # csv: Ruby 3.4'te varsayilan gem OLMAKTAN CIKTI (bundled gem'e donustu).
+  # Bundler altinda, burada bildirilmemis bir bundled gem yuklenemez ve
+  # /explorer?format=csv istegi 500 doner. Bu eksik, CI'da uzun sure gorunmez
+  # kaldi: is akisi `gem install ...` ile ikinci bir bagimlilik dunyasi
+  # kuruyor ve testleri `bundle exec` OLMADAN kosuyordu -- yani gemspec'in
+  # eksik olmasinin bir onemi yoktu. `bundle exec`e gecince aninda ortaya cikti.
+  spec.add_dependency 'csv',     '>= 3.0'
   spec.add_dependency 'puma',    '>= 6.0'
   # rackup: Rack 3 ile birlikte sunucuyu baslatan kod ayri bir gem'e tasindi.
   # Sinatra'nin `run!` cagrisi bunu arar; yoksa

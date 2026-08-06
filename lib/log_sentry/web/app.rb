@@ -24,6 +24,14 @@ require 'erb'
 require 'rack'
 require 'openssl'
 require 'time'
+# csv, Ruby 3.4'ten itibaren varsayilan gem OLMAKTAN CIKTI (bundled gem'e
+# donustu). Bundler altinda, Gemfile/gemspec'te bildirilmemis bir bundled
+# gem YUKLENEMEZ. Bu satir eskiden /explorer rotasinin ICINDE, istek aninda
+# calisiyordu -- yani hata ancak biri CSV disa aktarimi denedidiginde ve
+# 500 olarak ortaya cikiyordu. Burada, acilista yuklenmesi dogrusu:
+# eksik bir bagimlilik sunucu ayaga kalkarken bilinmeli, kullanicinin
+# karsisinda degil.
+require 'csv'
 require_relative '../store'
 require_relative '../archiver'
 require_relative '../tailer'
@@ -480,7 +488,6 @@ module LogSentry
             to: to_time
           )
 
-          require 'csv'
           return CSV.generate(col_sep: ';') do |csv|
             csv << ['Zaman', 'Kaynak IP', 'Metot', 'Yol', 'Durum Kodu', 'Bayt', 'User Agent']
             csv_events.each do |e|
