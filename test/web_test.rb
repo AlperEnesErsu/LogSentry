@@ -570,6 +570,67 @@ class WebTest < Minitest::Test
     LogSentry::Web::App.reset_rate_limit!
   end
 
+  # ==========================================================================
+  #  GUVENLIK BASLIKLARI -- h()'nin arkasindaki ikinci katman
+  # --------------------------------------------------------------------------
+  #  Bu panelin gosterdigi verinin buyuk kismini saldirgan yaziyor. Tek
+  #  savunma h() helper'iydi; sablonlarin birinde bir <%= %> icinde h()
+  #  unutuldugu an geriye hicbir sey kalmiyordu. CSP, escape kacirilsa bile
+  #  enjekte edilen script'in CALISMAMASINI saglar.
+  # ==========================================================================
+
+  def test_guvenlik_basliklari_gonderiliyor
+    res = get('/')
+
+    assert_equal 'nosniff', res.headers['X-Content-Type-Options']
+    assert_equal 'DENY',    res.headers['X-Frame-Options']
+    assert_equal 'no-referrer', res.headers['Referrer-Policy']
+    refute_nil res.headers['Content-Security-Policy']
+    refute_nil res.headers['Permissions-Policy']
+  end
+
+  def test_csp_script_kaynagi_kati
+    csp = get('/').headers['Content-Security-Policy']
+
+    assert_includes csp, "script-src 'self'"
+    # En kritik satir: script icin 'unsafe-inline' verilirse CSP'nin XSS'e
+    # karsi degeri buyuk olcude kaybolur -- enjekte edilen <script> yine
+    # calisir. Bu panelde hic inline script yok, yani katiligin maliyeti
+    # sifir; birisi kolaylik olsun diye eklerse bu test yakalar.
+    refute_match(/script-src[^;]*unsafe-inline/, csp,
+                 "script-src'te 'unsafe-inline' CSP'yi XSS'e karsi etkisiz kilar")
+    refute_match(/script-src[^;]*unsafe-eval/, csp,
+                 "script-src'te 'unsafe-eval' olmamali")
+  end
+
+  def test_csp_clickjacking_ve_taban_url_kapali
+    csp = get('/').headers['Content-Security-Policy']
+
+    assert_includes csp, "frame-ancestors 'none'", 'panel iframe icine gomulememeli'
+    assert_includes csp, "base-uri 'none'",        '<base> ile goreli yollar kacirilamamali'
+    assert_includes csp, "object-src 'none'"
+  end
+
+  # Basliklar yalnizca ana sayfada degil, veri gosteren TUM sayfalarda
+  # olmali. Tek bir sayfada eksik olmasi, o sayfayi korumasiz birakir.
+  def test_guvenlik_basliklari_tum_sayfalarda
+    ['/', '/alerts', '/explorer', '/health', '/metrics', '/ips/1.2.3.4'].each do |yol|
+      res = get(yol)
+      refute_nil res.headers['Content-Security-Policy'],
+                 "#{yol}: Content-Security-Policy eksik"
+      assert_equal 'nosniff', res.headers['X-Content-Type-Options'],
+                   "#{yol}: X-Content-Type-Options eksik"
+    end
+  end
+
+  # Hata sayfalari da veri gosterir (ve saldirgan bunlari kasten
+  # tetikleyebilir) -- basliklar orada da olmali.
+  def test_guvenlik_basliklari_hata_sayfalarinda
+    res = get('/boyle-bir-sayfa-yok')
+    assert_equal 404, res.status
+    refute_nil res.headers['Content-Security-Policy'], '404 sayfasinda CSP eksik'
+  end
+
   def test_prometheus_metrics_endpoint
     res = get('/metrics')
     assert_equal 200, res.status

@@ -136,7 +136,68 @@ module LogSentry
          RATE_LIMIT_MUTEX.synchronize { RATE_LIMIT_STORE.clear }
        end
 
+      # ======================================================================
+      #  GUVENLIK BASLIKLARI
+      # ----------------------------------------------------------------------
+      #  Bu panelin gosterdigi verinin buyuk kismini SALDIRGAN yaziyor:
+      #  izlenen sunucuya bir istek atarak log dosyasina istedigi metni
+      #  sokabiliyor ve o metin burada ekrana basiliyor (depolanmis XSS).
+      #
+      #  Buna karsi tek savunmamiz h() helper'iydi. h() dogru yazilmis bir
+      #  savunma -- ama TEK KATMAN. Sablonlarin birinde bir <%= %> icinde
+      #  h() unutuldugu an hicbir sey kalmiyor. CSP tam olarak bu yuzden var:
+      #  escape kacirilsa BILE tarayici enjekte edilen script'i calistirmaz.
+      #
+      #  script-src 'self' KATI: bu panelde hic inline <script> yok (tek
+      #  script /app.js, ayni kaynaktan). Yani katiligin bize maliyeti sifir
+      #  ve en onemli korumayi bedavaya aliyoruz.
+      #
+      #  style-src neden 'unsafe-inline'? Dashboard'daki cubuk genislikleri
+      #  hesaplanan bir yuzde ile inline style olarak veriliyor
+      #  (style="width: 42%"). CSP'de style ATTRIBUTE'lari nonce ile
+      #  imzalanamaz -- ya 'unsafe-inline' olur ya da o ozellik gider.
+      #  Bilincli takas: stil enjeksiyonu, script enjeksiyonundan cok daha
+      #  dusuk riskli ve buradaki deger saldirgan kontrolunde degil,
+      #  bizim hesapladigimiz bir sayi.
+      #
+      #  frame-ancestors 'none' + X-Frame-Options: panel baska bir sayfaya
+      #  gomulup tiklama hirsizligina (clickjacking) alet edilemesin.
+      #
+      #  NOT: HSTS burada YOK. Bu process duz HTTP konusuyor; HSTS'i TLS'i
+      #  sonlandiran yer (Nginx) gondermeli. Buradan gondermek etkisiz olur
+      #  ve "hallettik" yanilgisi uretir.
+      # ======================================================================
+      SECURITY_HEADERS = {
+        'Content-Security-Policy' => [
+          "default-src 'self'",
+          "script-src 'self'",
+          "style-src 'self' 'unsafe-inline'",
+          "img-src 'self' data:",
+          "connect-src 'self'",         # SSE (/stream) ayni kaynaktan
+          "form-action 'self'",
+          "base-uri 'none'",            # <base> ile goreli yollar kacirilamasin
+          "object-src 'none'",          # eklenti/gomulu icerik yok
+          "frame-ancestors 'none'"
+        ].join('; '),
+
+        # Tarayici Content-Type'i "tahmin etmeye" calismasin. Bu olmadan,
+        # metin olarak sunulan bir icerik script gibi yorumlanabilir.
+        'X-Content-Type-Options' => 'nosniff',
+
+        # frame-ancestors'in eski tarayicilardaki karsiligi.
+        'X-Frame-Options' => 'DENY',
+
+        # Referer basligi disari sizmasin: bu paneldeki URL'ler yakalanan
+        # IP adresleri ve arama filtreleri iceriyor (orn. /ips/45.155.205.233).
+        'Referrer-Policy' => 'no-referrer',
+
+        # Bir izleme panelinin kameraya, mikrofona, konuma isi yok.
+        'Permissions-Policy' => 'geolocation=(), camera=(), microphone=()'
+      }.freeze
+
       before do
+        SECURITY_HEADERS.each { |name, value| headers[name] = value }
+
         if settings.rate_limit_enabled
           unless self.class.check_rate_limit(client_ip, settings.rate_limit_max, settings.rate_limit_window)
             halt 429, { 'Content-Type' => 'text/plain', 'Retry-After' => settings.rate_limit_window.to_s },
