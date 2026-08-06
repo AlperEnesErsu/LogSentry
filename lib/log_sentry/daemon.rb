@@ -197,14 +197,57 @@ module LogSentry
         nil
       end
 
-      # Calisan ornege sinyal gonder.
+      # ======================================================================
+      #  Calisan ornege sinyal gonder
+      # ----------------------------------------------------------------------
+      #  WINDOWS'TA POSIX SINYALLERI YOKTUR.
+      #
+      #  Process.kill('TERM', pid) Windows'ta Errno::EINVAL atar --
+      #  `bin/logsentry --stop` bu yuzden platformda HIC calismiyordu ve
+      #  kullaniciya ham bir yigin izi gosteriyordu:
+      #
+      #      daemon.rb:206:in 'Process.kill': Invalid argument (Errno::EINVAL)
+      #
+      #  Windows'ta desteklenen tek sonlandirma 'KILL'dir ve bu, TERM gibi
+      #  NAZIK DEGILDIR: process temizlik yapmadan aninda oldurulur.
+      #  Bizim icin sonucu, Tailer'in konumunu diske yazamadan olmesi --
+      #  yani yeniden baslatildiginda birkac satiri tekrar islemesi.
+      #  Katlanilabilir; ama kullanicinin bunu BILMESI gerekir, o yuzden
+      #  sessizce yapmiyoruz.
+      #
+      #  SIGHUP (yeniden yukleme) Windows'ta karsiligi olmayan bir istek --
+      #  'KILL'e dusurmek, "yapilandirmayi yenile" diyen kullanicinin
+      #  servisini OLDURMEK olurdu. Onun yerine acikca reddediyoruz.
+      # ======================================================================
+      WINDOWS = RUBY_PLATFORM.match?(/mswin|mingw|cygwin/)
+
       def signal(name)
         pid = read
         raise "PID dosyasi yok veya bos: #{@path}" if pid.nil?
         raise "PID #{pid} calismiyor (bayat dosya)" unless alive?
 
-        Process.kill(name, pid)
+        Process.kill(effective_signal(name), pid)
         pid
+      end
+
+      private
+
+      def effective_signal(name)
+        return name unless WINDOWS
+
+        case name.to_s.sub(/\ASIG/, '')
+        when 'TERM', 'INT'
+          warn '[daemon] Windows POSIX sinyallerini desteklemiyor; nazik ' \
+               'kapanma yerine process sonlandiriliyor (KILL).'
+          warn '[daemon] Tailer konumunu diske yazamayabilir -- yeniden ' \
+               'baslatmada birkac satir tekrar islenebilir.'
+          'KILL'
+        when 'HUP'
+          raise 'SIGHUP Windows\'ta desteklenmiyor -- yapilandirmayi ' \
+                'yenilemek icin servisi durdurup yeniden baslat.'
+        else
+          name
+        end
       end
     end
   end

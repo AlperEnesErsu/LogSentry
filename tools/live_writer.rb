@@ -20,7 +20,28 @@
 require 'fileutils'
 require 'optparse'
 
-options = { attack: nil, rps: 3, file: File.expand_path('../logs/access.log', __dir__) }
+# ----------------------------------------------------------------------------
+#  VARSAYILAN LOG YOLU -- neden __dir__'e koru korune guvenmiyoruz?
+# ----------------------------------------------------------------------------
+#  Windows'ta, yolunda ASCII disi karakter olan kurulumlarda (orn.
+#  ".../Masaustu/...") Ruby'nin __dir__ degeri BOZUK gelebiliyor: konsol kod
+#  sayfasi kodlamasinda etiketleniyor ve ASCII disi karakterler "?" ile
+#  degistirilmis oluyor. Bilgi o noktada zaten kaybolmus -- sonradan
+#  encode/force_encoding ile kurtarilamiyor.
+#
+#  Sonuc: File.expand_path o bozuk yolu uretiyor, FileUtils.mkdir_p onunla
+#  Dir.mkdir cagirinca Errno::EINVAL aliyor ve arac HIC BASLAMIYOR:
+#
+#      Invalid argument @ dir_s_mkdir - C:/Users/.../Masa?st?
+#
+#  Dir.pwd ayni sorundan etkilenmiyor. bin/logsentry ve diger giris
+#  noktalari da zaten ayni yedegi kullaniyor (beklenen dosyayi bulamazsa
+#  Dir.pwd'ye duser) -- onlarin bu ortamda calisiyor olmasinin sebebi bu.
+# ----------------------------------------------------------------------------
+repo_root = File.expand_path('..', __dir__)
+repo_root = Dir.pwd unless Dir.exist?(File.join(repo_root, 'logs'))
+
+options = { attack: nil, rps: 3, file: File.join(repo_root, 'logs', 'access.log') }
 
 OptionParser.new do |o|
   o.on('--attack TYPE', 'brute | scan | flood') { |v| options[:attack] = v }
@@ -36,7 +57,22 @@ BRUTE_IP = '45.155.205.233'
 SCAN_IP  = '193.34.76.101'
 FLOOD_IP = '5.188.206.14'
 
-FileUtils.mkdir_p(File.dirname(options[:file]))
+# Dizin zaten varsa DOKUNMA.
+#
+# mkdir_p "zaten varsa bir sey yapmaz" diye bilinir, ama oyle calismaz:
+# once ustteki tum dizinleri yurur ve eksik gordugunu yaratmaya calisir.
+# Yolunda ASCII disi karakter olan Windows kurulumlarinda (orn.
+# ".../Masaustu/...") File.expand_path yolu konsol kod sayfasi
+# kodlamasinda (IBM857) donduruyor; mkdir_p o baytlarla Dir.mkdir cagirinca
+# Errno::EINVAL aliyor ve arac hic baslamiyor:
+#
+#     Invalid argument @ dir_s_mkdir - C:/Users/.../Masa?st?
+#
+# Var olani yaratmaya calismamak, hem bu sorunu cozer hem de zaten
+# yapilmasi gereken sey. (Ayni kodlama tuzagi bin/logsentry-archive'da
+# require_relative'i de bozuyordu.)
+log_dir = File.dirname(options[:file])
+FileUtils.mkdir_p(log_dir) unless Dir.exist?(log_dir)
 
 def line(ip:, method: 'GET', path: '/', status: 200, agent: 'Mozilla/5.0 Chrome/126.0')
   format('%s - - [%s] "%s %s HTTP/1.1" %d %d "-" "%s"',
