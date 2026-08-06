@@ -20,11 +20,27 @@ Gem::Specification.new do |spec|
     'lib/**/*.js',
     'bin/*',
     'config/*.yml',
+    # systemd birimleri: saklama suresi temizligi ve tehdit istihbarati
+    # beslemesi ancak periyodik calistirilirsa ise yarar. Bunlari pakete
+    # koymazsak kullanici "nasil zamanlayacagim?" sorusuyla yalniz kalir.
+    'deploy/*',
     'ARCHITECTURE.md',
     'LICENSE',
     'README.md'
   ]
-  spec.executables   = ['logsentry', 'logsentry-web', 'logsentry-archive', 'logsentry-doctor']
+
+  # ONEMLI: bin/ altina yeni bir komut eklerken BURAYA DA ekle.
+  # Aksi halde dosya pakete girer ama `gem install` sonrasi PATH'e
+  # baglanmaz -- yani komut kullanicida "yok" gorunur. logsentry-threat-intel
+  # tam olarak bu sekilde gozden kacmisti; test/regression3_test.rb artik
+  # bin/ ile bu listenin ayrisamamasini garanti ediyor.
+  spec.executables = %w[
+    logsentry
+    logsentry-web
+    logsentry-archive
+    logsentry-doctor
+    logsentry-threat-intel
+  ]
   spec.require_paths = ['lib']
 
   # Adim 1-5 arasi cekirdek sifir bagimlilikla calisir; asagidakiler

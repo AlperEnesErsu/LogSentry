@@ -275,11 +275,18 @@ class RegressionTest < Minitest::Test
   # ==========================================================================
   #  7) PAKETLEME -- README'de anlatilan arac gem ile kuruluyor mu?
   # ==========================================================================
+  #  NOT: bu test once `spec.executables = ...` SATIRINI okuyordu. Liste
+  #  cok satirli bir %w[] blogUNA donusunce assertion, kod dogru oldugu
+  #  halde kirildi -- bicimlendirmeye bagimli bir testin klasik sonu.
+  #  Artik blogun tamami okunuyor.
+  #
+  #  Daha genis kapsamli kardesi: regression3_test.rb ->
+  #  test_bin_komutlari_gemspec_ile_ayni (bin/ ile listeyi birbirine kilitler)
   def test_doctor_araci_gemspec_icinde
     gemspec = File.read(File.join(ROOT, 'logsentry.gemspec'))
-    executables_line = gemspec[/spec\.executables\s*=.*/]
+    executables = gemspec[/spec\.executables\s*=\s*(%w\[.*?\]|\[.*?\])/m, 1].to_s
 
-    assert_includes executables_line.to_s, 'logsentry-doctor',
+    assert_includes executables, 'logsentry-doctor',
                     "bin/logsentry-doctor README'de anlatiliyor ama gemspec executables listesinde yok"
   end
 end

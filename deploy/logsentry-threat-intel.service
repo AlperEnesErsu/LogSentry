@@ -1,0 +1,64 @@
+# ============================================================================
+#  Tehdit istihbarati beslemesini guncelleyen TEK SEFERLIK is
+# ----------------------------------------------------------------------------
+#  bin/logsentry-threat-intel, Tor cikis dugumleri gibi bilinen zararli IP
+#  listelerini cekip veritabanina yazar. threat_intel kurali bu tabloyu
+#  okur.
+#
+#  BESLEME GUNCELLENMEZSE KURAL YANLIS CALISIR -- ve bu, "hic calismamak"tan
+#  daha kotudur:
+#    * yeni cikan zararli adresleri GORMEZ (yanlis negatif)
+#    * listeden cikarilmis adresleri hala zararli sayar (yanlis pozitif)
+#  Iki durumda da panel "kontrol ediyorum" der ama etmez. Bayat istihbarat,
+#  istihbarat degildir.
+#
+#  KURULUM
+#    sudo cp deploy/logsentry-threat-intel.{service,timer} /etc/systemd/system/
+#    sudo systemctl daemon-reload
+#    sudo systemctl enable --now logsentry-threat-intel.timer
+#    systemctl list-timers logsentry-threat-intel
+# ============================================================================
+
+[Unit]
+Description=LogSentry - tehdit istihbarati IP beslemesini guncelle
+Documentation=file:///opt/logsentry/ARCHITECTURE.md
+# Bu is AG GEREKTIRIR (disaridan liste indiriyor).
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+
+User=logsentry
+Group=logsentry
+WorkingDirectory=/opt/logsentry
+
+ExecStart=/usr/bin/ruby /opt/logsentry/bin/logsentry-threat-intel --config /opt/logsentry/config/logsentry.yml
+
+# Ag isleri gecici olarak basarisiz olur (DNS, kaynak sunucu bakimda).
+# Tek seferlik hata alarm sebebi degil; timer yarin tekrar deneyecek.
+# Ama arka arkaya basarisizlik `systemctl --failed` ile gorunur kalir.
+Restart=no
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=logsentry-threat-intel
+
+# --- Guvenlik kisitlari ----------------------------------------------------
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryDenyWriteExecute=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# Yalnizca veritabanina yazar; loglara dokunmasi gerekmiyor.
+ReadWritePaths=/opt/logsentry/db /opt/logsentry/logs
+
+MemoryMax=256M
+CPUQuota=50%

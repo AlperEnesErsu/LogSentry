@@ -1,0 +1,25 @@
+# ============================================================================
+#  Tehdit istihbarati beslemesini gunde bir kez yenileyen zamanlayici
+# ============================================================================
+
+[Unit]
+Description=LogSentry tehdit istihbarati guncellemesini gunlukleyen zamanlayici
+Documentation=file:///opt/logsentry/ARCHITECTURE.md
+
+[Timer]
+# 02:00 -- bakim isinden (03:30) ONCE. Sira onemli: once istihbarat
+# tazelenir, sonra gunun logu dondurulup arsivlenir.
+OnCalendar=*-*-* 02:00:00
+
+# Kaynak sunucuyu ayni saniyede yuzlerce kurulumla bogmayalim.
+# Ucretsiz besleme saglayicilari bunu hiz siniriyla cezalandirir.
+RandomizedDelaySec=30m
+
+# Kapali gecirilen gunun guncellemesini acilista telafi et. Bayat bir
+# istihbarat listesiyle calismak, sessizce yanlis karar vermek demektir.
+Persistent=true
+
+Unit=logsentry-threat-intel.service
+
+[Install]
+WantedBy=timers.target

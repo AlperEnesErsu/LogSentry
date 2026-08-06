@@ -190,6 +190,42 @@ class Regression3Test < Minitest::Test
   end
 
   # ==========================================================================
+  #  2d) bin/ ile gemspec executables listesi ayrisamaz
+  # --------------------------------------------------------------------------
+  #  Yasanan ariza: bin/logsentry-threat-intel yazildi, test edildi, commit
+  #  edildi -- ama gemspec'teki executables listesine eklenmedi. Sonuc:
+  #  `gem install logsentry` yapan kullanicida o komut PATH'e baglanmiyor,
+  #  yani KOMUT YOK. Depoda calisan herkes icin sorunsuz gorundugu icin de
+  #  fark edilmesi zor bir hata.
+  #
+  #  Bu test iki listeyi birbirine kilitliyor: bin/ altina yeni bir komut
+  #  eklemek, gemspec'i guncellemeyi ZORUNLU kilar.
+  # ==========================================================================
+  def test_bin_komutlari_gemspec_ile_ayni
+    gemspec = File.read(File.join(ROOT, 'logsentry.gemspec'))
+
+    diskteki = Dir.glob(File.join(ROOT, 'bin', '*'))
+                  .select { |f| File.file?(f) }
+                  .map { |f| File.basename(f) }
+                  .sort
+
+    # spec.executables = %w[...] blogunu oku
+    blok = gemspec[/spec\.executables\s*=\s*%w\[(.*?)\]/m, 1]
+    refute_nil blok, 'gemspec icinde spec.executables listesi bulunamadi'
+    bildirilen = blok.split.sort
+
+    eksik = diskteki - bildirilen
+    assert_empty eksik,
+                 "bin/ altinda olup gemspec'te bildirilmeyen komut(lar): " \
+                 "#{eksik.join(', ')} -- `gem install` sonrasi PATH'e baglanmaz."
+
+    fazla = bildirilen - diskteki
+    assert_empty fazla,
+                 "gemspec'te bildirilip bin/ altinda olmayan komut(lar): " \
+                 "#{fazla.join(', ')} -- paketleme hatasi verir."
+  end
+
+  # ==========================================================================
   #  3) Parser'in iki yolu farkli katiliktA
   # --------------------------------------------------------------------------
   #  combined: status alani yoksa satiri REDDEDIYOR (dogru -- durum kodu
