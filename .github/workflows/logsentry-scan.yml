@@ -1,3 +1,21 @@
+# ============================================================================
+#  LogSentry -- kendi kendini denetleme is akisi
+# ----------------------------------------------------------------------------
+#  ONCEKI HALI YESIL YALAN SOYLUYORDU:
+#
+#      bundle exec rake test || ruby test/engine_test.rb
+#      ruby bin/logsentry --replay logs/access.log || true
+#
+#  Birinci satir: tum paket cokse bile TEK bir dosya gecerse is yesile
+#  donuyordu. Ikinci satir: replay ne yaparsa yapsin `|| true` sonucu
+#  yutuyordu. Yani bu is akisinin "basarili" olmasi hicbir sey kanitlamiyor,
+#  yalnizca "bir seyler kostu" demek oluyordu.
+#
+#  Bir GUVENLIK denetimi is akisinin hatayi yutmasi, ozellikle kotu: insan
+#  yesil rozete bakip "denetim gecti" diye dusunur. Sessiz basarisizlik,
+#  basarisizliktan daha tehlikelidir.
+# ============================================================================
+
 name: LogSentry Security Scan
 
 on:
@@ -8,10 +26,20 @@ on:
   schedule:
     - cron: '0 0 * * *'
 
+# Ayni dal icin ust uste tetiklenen kosulari iptal et: 10 dakika once
+# baslamis, artik gecersiz bir denetimin sonucunu beklemenin anlami yok.
+concurrency:
+  group: scan-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
   logsentry-audit:
     name: Run LogSentry Diagnostic & SIEM Audit
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -22,14 +50,36 @@ jobs:
           ruby-version: '3.3'
           bundler-cache: true
 
-      - name: Install Dependencies
-        run: |
-          gem install minitest rake sqlite3 sinatra puma
+      # `gem install` YOK. bundler-cache: true zaten Gemfile'i (ve oradan
+      # gemspec'i) kurdu. Ikinci bir kurulum yolu, gemspec'teki surum
+      # kisitlarinin (sinatra ~> 4.0 gibi) HIC test edilmemesi demekti.
 
       - name: Run Test Suite
-        run: |
-          bundle exec rake test || ruby test/engine_test.rb
+        run: bundle exec rake test
 
+      # ONEMLI: logs/ .gitignore'da (uretilen veri, kod degil) -- yani
+      # depoda access.log YOK. Onceki surumdeki `|| true` buyuk olasilikla
+      # tam da bunu gizlemek icin konmustu: replay "dosya yok" diye
+      # patliyordu ve hata yutuluyordu. Dogru cozum hatayi susturmak degil,
+      # denetlenecek veriyi URETMEK.
+      - name: Generate Sample Traffic
+        run: bundle exec ruby tools/log_generator.rb 5000 logs/access.log
+
+      # Replay, gercek bir log dosyasi uzerinde tum ayristirma + kural
+      # zincirini kuru kuruya kosar. `|| true` KALDIRILDI: sifir olmayan
+      # cikis kodu (orn. hicbir satir ayristirilamadi) artik isi kirmizi
+      # yapar -- ki ayristirma oraninin sifira dusmesi bu aracin en sinsi
+      # ariza bicimi.
       - name: Run Dry-Run Replay Simulation
-        run: |
-          ruby bin/logsentry --replay logs/access.log || true
+        run: bundle exec ruby bin/logsentry --replay logs/access.log
+
+      # Ortam teshisi: eksik gem, okunamayan log, bozuk yapilandirma gibi
+      # "calisir gorunup calismayan" durumlari yakalar.
+      - name: Environment Diagnostics
+        run: bundle exec ruby bin/logsentry-doctor
+
+      # Arsiv butunlugu: manifest hash zinciri saglam mi? Bu adimin cikis
+      # kodu 2 ise arsiv KURCALANMIS demektir -- kendi basina bir guvenlik
+      # olayi. Hicbir sey silmiyoruz (--verify salt okunur).
+      - name: Archive Integrity Check
+        run: bundle exec ruby bin/logsentry-archive --verify

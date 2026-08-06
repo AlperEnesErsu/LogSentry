@@ -226,6 +226,57 @@ class Regression3Test < Minitest::Test
   end
 
   # ==========================================================================
+  #  2e) CI hatayi yutmamali -- "yesil yalan"
+  # --------------------------------------------------------------------------
+  #  Yasanan ariza: logsentry-scan.yml su iki satiri iceriyordu
+  #
+  #      bundle exec rake test || ruby test/engine_test.rb
+  #      ruby bin/logsentry --replay logs/access.log || true
+  #
+  #  Birincisi: tum paket cokse bile TEK bir dosya gecerse is yesile
+  #  donuyordu. Ikincisi: replay ne yaparsa yapsin sonuc yutuluyordu.
+  #  Yani is akisinin "basarili" olmasi hicbir sey kanitlamiyordu.
+  #
+  #  Bir GUVENLIK denetiminde bu ozellikle kotu: insan yesil roze te bakip
+  #  "denetim gecti" diye dusunur. Sessiz basarisizlik, basarisizliktan
+  #  daha tehlikelidir.
+  # ==========================================================================
+  def test_ci_is_akislari_hatayi_yutmuyor
+    Dir.glob(File.join(ROOT, '.github', 'workflows', '*.yml')).each do |wf|
+      ad = File.basename(wf)
+      icerik = File.read(wf)
+
+      # Aciklama satirlari haric -- orada bu kaliplardan bahsetmek serbest
+      # (nitekim neden kaldirildiklari anlatiliyor).
+      kod = icerik.lines.reject { |l| l.strip.start_with?('#') }.join
+
+      refute_match(/\|\|\s*true/, kod,
+                   "#{ad}: `|| true` cikis kodunu yutuyor -- adim ne olursa " \
+                   'olsun yesil kalir.')
+      refute_match(/rake test\s*\|\|/, kod,
+                   "#{ad}: test paketi cokerse yedek komuta dusuyor -- " \
+                   'tek dosya gecince tum paket gecmis sayiliyor.')
+    end
+  end
+
+  # CI, bagimliliklari tek bir yerden kurmali. `bundler-cache: true` ile
+  # `gem install ...` birlikte kullanilirsa testler gemspec'teki surum
+  # kisitlarindan BAGIMSIZ kosar -- yani gemspec bozuk olsa bile CI yesil
+  # kalir, ki bu tam olarak CI'in yakalamasi gereken hata sinifi.
+  def test_ci_bagimliliklari_bundler_ile_kuruyor
+    Dir.glob(File.join(ROOT, '.github', 'workflows', '*.yml')).each do |wf|
+      ad  = File.basename(wf)
+      kod = File.read(wf).lines.reject { |l| l.strip.start_with?('#') }.join
+
+      next unless kod.include?('bundler-cache: true')
+
+      refute_match(/run:\s*gem install (?!\.\/)/, kod,
+                   "#{ad}: bundler ile elle `gem install` bir arada -- " \
+                   'iki farkli bagimlilik dunyasi olusuyor.')
+    end
+  end
+
+  # ==========================================================================
   #  3) Parser'in iki yolu farkli katiliktA
   # --------------------------------------------------------------------------
   #  combined: status alani yoksa satiri REDDEDIYOR (dogru -- durum kodu

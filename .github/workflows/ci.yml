@@ -1,3 +1,21 @@
+# ============================================================================
+#  CI -- test paketi
+# ----------------------------------------------------------------------------
+#  ONCEKI HALINDE IKI BAGIMLILIK DUNYASI KARISIYORDU:
+#
+#      with: { bundler-cache: true }        # 1) Gemfile -> gemspec kurulumu
+#      run: gem install sqlite3 sinatra ... # 2) elle, surumsuz kurulum
+#      run: rake test                       # bundle exec YOK
+#
+#  Sonuc: testler ikinci dunyada, gemspec'teki surum kisitlarindan
+#  (sinatra ~> 4.0, sqlite3 >= 2.0, rackup >= 2.0) BAGIMSIZ kosuyordu.
+#  Yani gemspec bozuk olsa bile CI yesil kaliyordu -- ki bu tam olarak
+#  CI'in yakalamasi gereken hata sinifi. (rackup eksigi de zamaninda
+#  yerelde degil, temiz bir konteynerde ortaya cikmisti; bkz. gemspec.)
+#
+#  Simdi tek yol var: bundler.
+# ============================================================================
+
 name: CI
 
 on:
@@ -6,22 +24,90 @@ on:
   pull_request:
     branches: [ main, master ]
 
+# Ayni dala arka arkaya push edilirse eski kosulari iptal et.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
   test:
+    name: test (${{ matrix.os }}, ruby ${{ matrix.ruby-version }})
     runs-on: ${{ matrix.os }}
     strategy:
+      # Bir kombinasyon patlayinca digerlerini iptal etme: "yalnizca
+      # Windows'ta mi, yoksa her yerde mi kiriliyor?" sorusunun cevabi
+      # ayni kosuda gorunsun.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
         ruby-version: ['3.2', '3.3', '3.4']
 
     steps:
-    - uses: actions/checkout@v4
-    - name: Set up Ruby
-      uses: ruby/setup-ruby@v1
-      with:
-        ruby-version: ${{ matrix.ruby-version }}
-        bundler-cache: true
-    - name: Install Dependencies
-      run: gem install sqlite3 sinatra puma minitest rake
-    - name: Run Tests
-      run: rake test
+      - uses: actions/checkout@v4
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby-version }}
+          bundler-cache: true
+
+      # `gem install ...` adimi KALDIRILDI -- gerekcesi dosya basinda.
+      # Bagimliliklar tek yerde tanimli: logsentry.gemspec.
+
+      - name: Run Tests
+        run: bundle exec rake test
+
+  # ==========================================================================
+  #  PAKETLEME -- gem gercekten kurulabiliyor mu?
+  # --------------------------------------------------------------------------
+  #  Test paketi depo kokunden kosar ve $LOAD_PATH elle ayarlanir; bu, gem
+  #  olarak kurulunca calisip calismayacagini SOYLEMEZ. Eksik bir dosya
+  #  kalibi (orn. .erb sablonlari) ya da executables listesinde unutulmus
+  #  bir komut ancak burada ortaya cikar -- kullanicidan once.
+  # ==========================================================================
+  package:
+    name: gem paketlenebiliyor mu
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+
+      - name: Build gem
+        run: gem build logsentry.gemspec
+
+      - name: Install gem
+        run: gem install ./logsentry-*.gem
+
+      # Kurulan gem'in komutlari PATH'te mi? logsentry-threat-intel tam
+      # olarak burada gozden kacmisti: dosya depoda vardi, gemspec'te yoktu.
+      - name: Verify executables are on PATH
+        run: |
+          for cmd in logsentry logsentry-web logsentry-archive logsentry-doctor logsentry-threat-intel; do
+            command -v "$cmd" >/dev/null || { echo "EKSIK: $cmd PATH'te yok"; exit 1; }
+            echo "OK: $cmd"
+          done
+
+      # Web arayuzunun .erb sablonlari ve statik varliklari pakete girdi mi?
+      # Girmediyse kutuphane yuklenir ama panel calisma aninda coker.
+      - name: Verify web assets shipped
+        run: |
+          ruby -e '
+            spec = Gem::Specification.find_by_name("logsentry")
+            eksik = %w[
+              lib/log_sentry/web/views/layout.erb
+              lib/log_sentry/web/public/app.css
+              lib/log_sentry/web/public/app.js
+              config/logsentry.yml
+            ].reject { |f| File.exist?(File.join(spec.gem_dir, f)) }
+            abort "pakette eksik dosyalar: #{eksik.join(", ")}" unless eksik.empty?
+            puts "web varliklari pakete girdi"
+          '
