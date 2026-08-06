@@ -73,15 +73,11 @@ port    = options[:port] || web_cfg.fetch('port', 4567)
 #  bu bilgiyi herkese acmak demektir. Engellemiyoruz -- kullanicinin karari --
 #  ama sessiz de kalmiyoruz.
 # ----------------------------------------------------------------------------
-unless %w[127.0.0.1 localhost ::1].include?(bind)
-  warn <<~WARN
-
-    !! UYARI: arayuz #{bind} adresine aciliyor.
-    !! Bu panelde kimlik dogrulama YOK ve ham log satirlarini gosteriyor.
-    !! Disa acmak gerekiyorsa Nginx arkasindan, TLS + kimlik dogrulama ile yap.
-
-  WARN
-end
+#  NOT: bu uyari eskiden kosulsuz "kimlik dogrulama YOK" diyordu -- auth
+#  acikken bile. Dogru olmayan bir uyari, zamanla TUM uyarilarin
+#  gormezden gelinmesine yol acar. Metin artik gercek duruma bakiyor.
+#  (Kontrol asagida, auth ayarlari cozuldukten sonra yapiliyor.)
+EXPOSED_BIND = !%w[127.0.0.1 localhost ::1].include?(bind)
 
 # --- Depolama ---------------------------------------------------------------
 store = nil
@@ -115,15 +111,88 @@ app.set :page_size,  web_cfg.fetch('page_size', 50)
 app.set :bind,       bind
 app.set :port,       port
 
-# Authentication / RBAC settings
-auth_cfg = web_cfg['auth'] || {}
-auth_enabled = auth_cfg.fetch('enabled', false) || !ENV['LOGSENTRY_WEB_PASS'].to_s.empty?
+# ----------------------------------------------------------------------------
+#  KIMLIK DOGRULAMA / RBAC
+# ----------------------------------------------------------------------------
+#  PAROLALAR YALNIZCA ORTAM DEGISKENINDEN OKUNUR.
+#
+#  Onceki surumde yapilandirma dosyasindaki admin_pass/viewer_pass alanlari
+#  da kabul ediliyordu ve config/logsentry.yml icinde "admin123" yaziyordu.
+#  `enabled: false` oldugu icin somurulebilir degildi -- ama bu guvenlik
+#  degil SANS'ti: biri `enabled: true` yazdigi an panel BILINEN bir
+#  parolayla aciliyordu.
+#
+#  Git gecmisi silinmez. Bir kez commit edilen parola, sonradan dosyadan
+#  cikarilsa bile gecmiste durur; sizan kimlik bilgilerinin en yaygin
+#  sebebi budur. O yuzden yapilandirmadan parola okuma yolu TAMAMEN
+#  kapatildi -- "isterse oradan da okusun" demek, kotu secenegi acik
+#  birakmak demektir.
+# ----------------------------------------------------------------------------
+auth_cfg     = web_cfg['auth'] || {}
+admin_pass   = ENV['LOGSENTRY_WEB_PASS'].to_s
+viewer_pass  = ENV['LOGSENTRY_WEB_VIEWER_PASS'].to_s
+auth_enabled = auth_cfg.fetch('enabled', false) || !admin_pass.empty?
+
+# Yapilandirmada unutulmus parola alanlari sessizce yok sayilmasin:
+# kullanici parolayi oraya yazip "ayarladim" sanmamali.
+%w[admin_pass viewer_pass].each do |eski|
+  next unless auth_cfg.key?(eski)
+
+  warn "!! UYARI: web.auth.#{eski} YOK SAYILDI -- parolalar yalnizca ortam"
+  warn '!! degiskeninden okunur. Yapilandirma dosyasi git\'e girer ve git'
+  warn '!! gecmisi silinmez. Kullan: LOGSENTRY_WEB_PASS / LOGSENTRY_WEB_VIEWER_PASS'
+end
+
+# --- GUVENLIK KAPISI --------------------------------------------------------
+#  Auth acik ama parola yoksa BASLAMA. Alternatifleri dusun:
+#    * parolasiz baslamak  -> kullanici korundugunu sanir, panel aciktir
+#    * varsayilan parola   -> ayni sey, ustelik parola bilinen bir deger
+#  Ikisi de sessizce yanlis calisir. Acikca hata vermek tek durust secenek:
+#  bir guvenlik ayarinin yarim calismasi, hic calismamasindan kotudur.
+if auth_enabled && admin_pass.empty?
+  abort <<~HATA
+
+    HATA: web.auth.enabled true ama admin parolasi tanimli degil.
+
+    Parolalar yalnizca ortam degiskeninden okunur (yapilandirma dosyasi
+    git'e girer ve git gecmisi silinmez):
+
+        export LOGSENTRY_WEB_PASS=$(openssl rand -base64 24)
+        export LOGSENTRY_WEB_VIEWER_PASS=$(openssl rand -base64 24)   # istege bagli
+
+    Kimlik dogrulamasi istemiyorsan config'de web.auth.enabled: false birak.
+
+  HATA
+end
+
 app.set :auth_enabled, auth_enabled
 app.set :auth_user, ENV['LOGSENTRY_WEB_USER'] || auth_cfg['admin_user'] || 'admin'
-app.set :auth_pass, auth_enabled ? (ENV['LOGSENTRY_WEB_PASS'] || auth_cfg['admin_pass']) : nil
+app.set :auth_pass, auth_enabled ? admin_pass : nil
 
 app.set :auth_viewer_user, ENV['LOGSENTRY_WEB_VIEWER_USER'] || auth_cfg['viewer_user'] || 'viewer'
-app.set :auth_viewer_pass, auth_enabled ? (ENV['LOGSENTRY_WEB_VIEWER_PASS'] || auth_cfg['viewer_pass']) : nil
+app.set :auth_viewer_pass, (auth_enabled && !viewer_pass.empty?) ? viewer_pass : nil
+
+# --- DISA ACMA UYARISI (gercek duruma gore) ---------------------------------
+if EXPOSED_BIND
+  if auth_enabled
+    warn <<~WARN
+
+      !! UYARI: arayuz #{bind} adresine aciliyor (kimlik dogrulama ACIK).
+      !! Basic auth parolayi DUZ METIN gonderir; TLS olmadan aradaki
+      !! herkes okuyabilir. Nginx arkasindan HTTPS ile sun.
+
+    WARN
+  else
+    warn <<~WARN
+
+      !! UYARI: arayuz #{bind} adresine aciliyor ve KIMLIK DOGRULAMA YOK.
+      !! Bu panel ham log satirlarini, yakalanan IP'leri ve kural esiklerini
+      !! gosteriyor -- saldirganin en cok gormek istedigi ekran.
+      !! En azindan: export LOGSENTRY_WEB_PASS=$(openssl rand -base64 24)
+
+    WARN
+  end
+end
 
 # Kimlik dogrulamasindan muaf yollar (/health, /metrics, /webhooks/github).
 # Bunlar MAKINE uclari: healthcheck ve Prometheus Basic auth tasimaz.

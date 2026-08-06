@@ -277,6 +277,46 @@ class Regression3Test < Minitest::Test
   end
 
   # ==========================================================================
+  #  2f) Depoda duz metin parola olmamali
+  # --------------------------------------------------------------------------
+  #  Yasanan durum: config/logsentry.yml icinde admin_pass: "admin123" ve
+  #  viewer_pass: "viewer123" yaziyordu. `enabled: false` oldugu icin
+  #  somurulebilir degildi -- ama bu guvenlik degil SANS'ti: biri
+  #  `enabled: true` yazdigi an panel BILINEN bir parolayla aciliyordu.
+  #
+  #  Ustelik parolayi oraya yazan kisi onu git'e commit etmis oluyordu.
+  #  Git gecmisi silinmez: bir kez commit edilen parola, sonradan dosyadan
+  #  cikarilsa bile gecmiste durur. Sizan kimlik bilgilerinin en yaygin
+  #  sebebi budur.
+  # ==========================================================================
+  def test_yapilandirmada_duz_metin_parola_yok
+    Dir.glob(File.join(ROOT, 'config', '*.yml')).each do |yml|
+      ad  = File.basename(yml)
+      kod = File.read(yml).lines.reject { |l| l.strip.start_with?('#') }.join
+
+      refute_match(/^\s*(admin_pass|viewer_pass|password)\s*:\s*\S/, kod,
+                   "#{ad}: yapilandirmada duz metin parola var. Parolalar " \
+                   'yalnizca ortam degiskeninden okunmali -- bu dosya git\'e girer.')
+    end
+  end
+
+  def test_web_launcher_yapilandirmadan_parola_okumaz
+    kod = File.read(File.join(ROOT, 'bin', 'logsentry-web'))
+             .lines.reject { |l| l.strip.start_with?('#') }.join
+
+    refute_match(/auth_cfg\[['"](admin_pass|viewer_pass)['"]\]/, kod,
+                 'parola yapilandirma dosyasindan okunuyor -- yalnizca ' \
+                 'ortam degiskeni kabul edilmeli')
+
+    # Guvenlik kapisi: auth acik ama parola yoksa BASLAMA. Alternatifleri
+    # (parolasiz baslamak / varsayilan parola) ikisi de sessizce yanlis
+    # calisir; acikca hata vermek tek durust secenek.
+    assert_match(/auth_enabled && admin_pass\.empty\?/, kod,
+                 'auth acikken parolasiz baslamayi engelleyen kontrol yok')
+    assert_match(/abort/, kod, 'kontrol basarisiz olunca sunucu durmali')
+  end
+
+  # ==========================================================================
   #  3) Parser'in iki yolu farkli katiliktA
   # --------------------------------------------------------------------------
   #  combined: status alani yoksa satiri REDDEDIYOR (dogru -- durum kodu

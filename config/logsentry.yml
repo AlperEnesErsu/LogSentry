@@ -366,13 +366,41 @@ web:
     max: 120                  # <window> saniyede izin verilen istek sayisi
     window: 60                # saniye
 
-  # Rol Tabanlı Yetkilendirme (RBAC) Ayarları
+  # --- Rol Tabanli Yetkilendirme (RBAC) ------------------------------------
+  #
+  #  ############################################################
+  #   PAROLALAR BU DOSYADA TUTULMAZ. ORTAM DEGISKENINDEN GELIR.
+  #  ############################################################
+  #
+  #  Burada daha once `admin_pass: "admin123"` yaziyordu. `enabled: false`
+  #  oldugu icin sömürülebilir degildi -- ama bu, guvenlik degil SANS.
+  #  Birinin `enabled: true` yazdigi an, panel BILINEN bir parolayla
+  #  internete acilmis oluyordu. Ve o kisi parolayi degistirmeyi
+  #  hatirlasa bile, yazdigi yer git'e giden bir dosya olurdu.
+  #
+  #  Git gecmisi silinmez: bir kez commit edilen parola, sonradan
+  #  dosyadan cikarilsa bile gecmiste durmaya devam eder. Sizan
+  #  kimlik bilgilerinin en yaygin sebebi tam olarak budur.
+  #
+  #  KURULUM
+  #    export LOGSENTRY_WEB_PASS=$(openssl rand -base64 24)
+  #    export LOGSENTRY_WEB_VIEWER_PASS=$(openssl rand -base64 24)
+  #
+  #  systemd kullaniyorsan parolalari izinleri 600 olan ayri bir dosyaya
+  #  koy (deploy/logsentry.service icindeki EnvironmentFile satiri):
+  #    sudo install -m 600 /dev/null /etc/logsentry/secrets.env
+  #
+  #  GUVENLIK KAPISI: `enabled: true` yazip parolayi ortam degiskenine
+  #  koymazsan sunucu BASLAMAZ. Sessizce parolasiz ya da varsayilan
+  #  parolayla acilmaktansa acikca hata vermesi dogrusu -- bir guvenlik
+  #  ayarinin yarim calismasi, hic calismamasindan kotudur.
   auth:
-    enabled: false             # true yapılarak aktif edilebilir (ya da env üzerinden)
-    admin_user: "admin"
-    admin_pass: "admin123"     # admin tüm haklara sahip (yazma kapalı değilse)
-    viewer_user: "viewer"
-    viewer_pass: "viewer123"   # viewer sadece okuma (GET/HEAD) yapabilir
+    enabled: false             # true + LOGSENTRY_WEB_PASS ile aktif olur
+
+    # Yalnizca KULLANICI ADLARI burada. Parola alanlari BILINCLI olarak
+    # yok; koyarsan sunucu uyari verip yok sayar.
+    admin_user: "admin"        # tum haklar (web.read_only kapali degilse)
+    viewer_user: "viewer"      # yalnizca okuma (GET/HEAD)
 
     # --- Kimlik dogrulamasindan MUAF yollar ---------------------------------
     #  Bu uclar INSAN icin degil MAKINE icin: Docker healthcheck'i ve
