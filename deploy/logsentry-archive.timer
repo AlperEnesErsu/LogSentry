@@ -1,0 +1,41 @@
+# ============================================================================
+#  Bakim isini gunde bir kez calistiran zamanlayici
+# ----------------------------------------------------------------------------
+#  NEDEN CRON DEGIL?
+#
+#  cron da bu isi yapar, ama systemd timer'in uc somut ustunlugu var:
+#
+#    1) Persistent=true -- makine kapaliyken kacan calistirmayi acilista
+#       telafi eder. cron kacirdigini SESSIZCE atlar; sunucusu gece
+#       yeniden baslatilan bir kurulumda temizlik hic calismayabilir.
+#
+#    2) Ciktisi journald'a gider. cron ciktiyi mail'e yollar; mail
+#       yapilandirmasi olmayan sunucularda (yani cogunda) cikti KAYBOLUR --
+#       "arsiv butunlugu bozulmus" uyarisi dahil.
+#
+#    3) Servis birimini devralir: kaynak sinirlari, guvenlik kisitlari,
+#       kullanici izolasyonu .service dosyasinda TEK YERDE tanimli.
+# ============================================================================
+
+[Unit]
+Description=LogSentry bakim isini gunlukleyen zamanlayici
+Documentation=file:///opt/logsentry/ARCHITECTURE.md
+
+[Timer]
+# Her gun 03:30. Gece secildi cunku --roll canli logu dondurur ve --vacuum
+# veritabanini kilitler; ikisi de trafigin dusuk oldugu saatte olmali.
+OnCalendar=*-*-* 03:30:00
+
+# 0-15 dakika rastgele gecikme. Ayni anda kalkan 50 sunucunun hepsinin
+# 03:30:00'da diske yuklenmesini onler ("gurleyen suru" / thundering herd).
+RandomizedDelaySec=15m
+
+# Makine kapali/uykudayken kacirilan calistirmayi acilista telafi et.
+# Bu satir olmadan, gece kapatilan bir sunucuda temizlik HIC calismaz --
+# ve kimse fark etmez, cunku "hata" da uretmez.
+Persistent=true
+
+Unit=logsentry-archive.service
+
+[Install]
+WantedBy=timers.target

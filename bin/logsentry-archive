@@ -12,8 +12,24 @@
 #  dakikalar surebilen bir toplu is (batch job). Ikisini ayni process'e
 #  koymak, arsivleme sirasinda izlemenin gecikmesi demek olurdu.
 #
-#  CRON KURULUMU (her gun 03:15):
-#    15 3 * * * cd /opt/logsentry && bin/logsentry-archive --all >> logs/archive.log 2>&1
+#  ZAMANLAMA -- BU BETIGI CALISTIRAN BIR SEY OLMALI
+#  Yapilandirmadaki saklama sureleri (storage.hot_retention_days ve
+#  archive.retention_days) yalnizca bu betik calistiginda UYGULANIR.
+#  Kimse calistirmazsa o degerler bir niyet beyanindan ibarettir.
+#
+#    systemd (onerilen):
+#      sudo cp deploy/logsentry-archive.{service,timer} /etc/systemd/system/
+#      sudo systemctl daemon-reload
+#      sudo systemctl enable --now logsentry-archive.timer
+#
+#    docker compose:
+#      `logsentry-maintenance` servisi bunu gunde bir kez calistirir.
+#
+#    cron (systemd yoksa):
+#      15 3 * * * cd /opt/logsentry && bin/logsentry-archive --all >> logs/archive.log 2>&1
+#      NOT: cron kacirdigi calistirmayi telafi ETMEZ ve ciktisi mail
+#      yapilandirmasi yoksa kaybolur -- "butunluk bozulmus" uyarisi dahil.
+#      systemd timer ikisini de cozer (Persistent=true + journald).
 #
 #  KULLANIM
 #    bin/logsentry-archive --verify      # butunluk denetimi
@@ -178,10 +194,30 @@ options[:actions].uniq.each do |action|
     storage = config['storage']
     next puts 'sicak katman yapilandirilmamis -- atlandi' unless storage
 
+    # --------------------------------------------------------------------
+    #  NEDEN require_relative DEGIL?
+    # --------------------------------------------------------------------
+    #  Burada `require_relative '../lib/log_sentry/store'` vardi. Yolunda
+    #  ASCII disi karakter bulunan kurulumlarda (orn. Windows'ta
+    #  ".../Masaustu/..." gibi bir dizin) require_relative yolu bozuk
+    #  cozuyor ve LoadError atiyor. Betigin geri kalani zaten $LOAD_PATH
+    #  uzerinden `require` kullaniyordu; tutarli olan da bu.
+    #
+    #  ASIL SORUN require_relative DEGILDI: hatayi yakalayan rescue,
+    #  sebebini TAHMIN edip "sqlite3 gem yok" yaziyordu ve SIFIR cikis
+    #  koduyla devam ediyordu. Sonuc: saklama suresi temizligi hicbir sey
+    #  yapmiyor, yanlis sebebi soyluyor ve zamanlayici "basarili" goruyor.
+    #  Sessiz basarisizligin ders kitabi ornegi.
+    # --------------------------------------------------------------------
     begin
-      require_relative '../lib/log_sentry/store'
-    rescue LoadError
-      next puts 'sqlite3 gem yok -- atlandi'
+      require 'log_sentry/store'
+    rescue LoadError => e
+      # Tahmin etme, OLANI soyle. Ve basarili gibi davranma: temizligin
+      # calismamasi, saklama suresinin ihlal edilmesi demektir.
+      warn "!! sicak katman temizligi YAPILAMADI: #{e.message}"
+      warn '   (sqlite3 gem kurulu mu? `gem install sqlite3`)'
+      exit_code = 1
+      next
     end
 
     days = storage.fetch('hot_retention_days', 90)
@@ -207,7 +243,15 @@ options[:actions].uniq.each do |action|
     storage = config['storage']
     next puts 'sicak katman yapilandirilmamis -- atlandi' unless storage
 
-    require_relative '../lib/log_sentry/store'
+    # require_relative DEGIL -- gerekcesi yukarida (:prune_db).
+    begin
+      require 'log_sentry/store'
+    rescue LoadError => e
+      warn "!! vacuum YAPILAMADI: #{e.message}"
+      exit_code = 1
+      next
+    end
+
     store = LogSentry::Store.new(path: storage.fetch('database'))
     before = store.stats[:size_bytes].to_i
     puts '=== VACUUM ==='

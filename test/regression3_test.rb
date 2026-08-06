@@ -132,6 +132,64 @@ class Regression3Test < Minitest::Test
   end
 
   # ==========================================================================
+  #  2c) Saklama suresini UYGULAYAN bir zamanlayici var mi?
+  # --------------------------------------------------------------------------
+  #  Yasanan ariza: yapilandirmada iki saklama suresi tanimliydi
+  #  (hot_retention_days: 90, retention_days: 730) ve bunlari uygulayan kod
+  #  da vardi (Store#prune!, Archiver#prune!). Ama o kodu CAGIRAN hicbir sey
+  #  yoktu -- ne cron, ne systemd timer, ne compose servisi. Yalnizca birinin
+  #  elle `bin/logsentry-archive --prune` yazmasiyla calisiyordu.
+  #
+  #  Yani sicak katman sinirsiz buyuyor, arsiv hic temizlenmiyordu ve
+  #  yapilandirmadaki sureler bir NIYET BEYANI olarak kaliyordu. KVKK
+  #  tarafinda sorun ayarin yazili olmamasi degil, ISLEMEMESIDIR.
+  # ==========================================================================
+  def test_saklama_suresi_icin_zamanlayici_tanimli
+    timer = File.join(ROOT, 'deploy', 'logsentry-archive.timer')
+    unit  = File.join(ROOT, 'deploy', 'logsentry-archive.service')
+
+    assert File.exist?(timer),
+           'saklama suresini periyodik uygulayan bir systemd timer yok -- ' \
+           'prune! kodu var ama onu cagiran hicbir sey yok.'
+    assert File.exist?(unit), 'timer bir .service birimine dayanmali'
+
+    assert_match(/OnCalendar=/, File.read(timer), 'timer bir takvim tanimlamali')
+    assert_match(/--all\b/, File.read(unit),
+                 'bakim birimi verify+roll+prune+prune_db calistirmali')
+  end
+
+  # Bakim betigi, sicak katmani yukleyemedigi durumda SESSIZCE basarili
+  # gorunmemeli. Onceki halde LoadError yakalanip "sqlite3 gem yok" diye
+  # TAHMIN edilen bir sebep yaziliyor ve sifir cikis koduyla devam
+  # ediliyordu -- yani zamanlayici "basarili" goruyor, temizlik hic
+  # calismiyordu. (Gercek sebep bambaskaydi: require_relative, yolunda
+  # ASCII disi karakter olan kurulumlarda cozumu bozuyordu.)
+  def test_bakim_betigi_sessizce_basarili_gorunmez
+    src = File.read(File.join(ROOT, 'bin', 'logsentry-archive'))
+
+    # Yalnizca KOD satirlari: aciklama satirlarinda bu kaliplardan
+    # bahsetmek serbest (nitekim orada neden kullanilmadigi anlatiliyor).
+    kod = src.lines.reject { |l| l.strip.start_with?('#') }.join
+
+    refute_match(/rescue LoadError\s*\n\s*next puts/, kod,
+                 'LoadError yutulup sifir cikis koduyla devam edilmemeli')
+    refute_match(%r{require_relative ['"]\.\./lib}, kod,
+                 'betik $LOAD_PATH uzerinden require kullanmali -- ' \
+                 'require_relative ASCII disi yollarda bozuluyor')
+    assert_match(/exit_code = 1/, kod,
+                 'temizlik yapilamadiginda sifir olmayan cikis kodu gerekir')
+  end
+
+  def test_compose_bakim_servisi_tanimli
+    compose = File.read(File.join(ROOT, 'docker-compose.yml'))
+
+    assert_match(/logsentry-maintenance:/, compose,
+                 'konteyner kurulumunda saklama suresini uygulayan servis yok')
+    assert_match(/logsentry-archive/, compose,
+                 'bakim servisi bin/logsentry-archive calistirmali')
+  end
+
+  # ==========================================================================
   #  3) Parser'in iki yolu farkli katiliktA
   # --------------------------------------------------------------------------
   #  combined: status alani yoksa satiri REDDEDIYOR (dogru -- durum kodu

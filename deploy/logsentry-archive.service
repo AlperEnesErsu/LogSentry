@@ -1,0 +1,92 @@
+# ============================================================================
+#  Arsivleme + saklama suresi bakimi -- TEK SEFERLIK is (oneshot)
+# ----------------------------------------------------------------------------
+#  NEDEN AYRI BIR BIRIM?
+#
+#  Bu, logsentry.service gibi surekli calisan bir servis DEGIL. Gunde bir kez
+#  calisip isini bitiren bir is. systemd'de bunun adi Type=oneshot ve
+#  zamanlamasi ayri bir .timer dosyasindan gelir.
+#
+#  BU DOSYANIN VARLIK SEBEBI
+#  Yapilandirmada iki saklama suresi tanimliydi:
+#      storage.hot_retention_days : 90
+#      archive.retention_days     : 730
+#  ...ve bunlari uygulayan kod da vardi (Store#prune!, Archiver#prune!).
+#  Ama o kodu CAGIRAN hicbir sey yoktu: yalnizca birinin elle
+#  `bin/logsentry-archive --prune` yazmasiyla calisiyordu.
+#
+#  Sonuc: sicak katman sonsuza kadar buyuyor, arsiv hic temizlenmiyor ve
+#  yapilandirmadaki sureler yalnizca bir NIYET BEYANI olarak kaliyordu.
+#  Bu, KVKK tarafinda "gerekenden uzun sure saklama" demek -- yani ayarin
+#  yazili olmasi degil, ISLEMESI gerekiyor.
+#
+#  KURULUM
+#    sudo cp deploy/logsentry-archive.service /etc/systemd/system/
+#    sudo cp deploy/logsentry-archive.timer   /etc/systemd/system/
+#    sudo systemctl daemon-reload
+#    sudo systemctl enable --now logsentry-archive.timer
+#
+#    systemctl list-timers logsentry-archive   # ne zaman calisacak?
+#    systemctl status logsentry-archive        # son calismanin sonucu
+#    journalctl -u logsentry-archive           # ciktisi
+#    sudo systemctl start logsentry-archive    # simdi calistir (test)
+# ============================================================================
+
+[Unit]
+Description=LogSentry - arsivleme, butunluk denetimi ve saklama suresi temizligi
+Documentation=file:///opt/logsentry/ARCHITECTURE.md
+
+[Service]
+# oneshot: calis, bitir, cik. systemd bunu "basarisiz servis" saymaz.
+Type=oneshot
+
+User=logsentry
+Group=logsentry
+WorkingDirectory=/opt/logsentry
+
+# --all = verify + roll + prune + prune_db
+#
+#   verify   : mevcut muhurleri yeniden dogrula (once bu -- temizlikten ONCE
+#              butunlugu bilmek istiyoruz)
+#   roll     : canli logu dondur ve arsivle
+#   prune    : archive.retention_days'i gecen arsivleri sil
+#   prune_db : storage.hot_retention_days'i gecen kayitlari veritabanindan sil
+#
+# ONEMLI: prune, ham logu SILMIYOR -- suresi dolmus ARSIVI siliyor.
+# prune_db ise yalnizca sicak katmani temizler; ham log arsivde durur.
+ExecStart=/usr/bin/ruby /opt/logsentry/bin/logsentry-archive --config /opt/logsentry/config/logsentry.yml --all
+
+# ---------------------------------------------------------------------------
+#  CIKIS KODU 2 = ARSIV BUTUNLUGU BOZULMUS
+# ---------------------------------------------------------------------------
+#  Bu bir "is basarisiz oldu" durumu degil, bir GUVENLIK OLAYIDIR: loglarini
+#  degistiren kisi, genelde orada izini silmek isteyen kisidir.
+#
+#  systemd sifir olmayan cikisi "failed" olarak isaretler; boylece
+#  `systemctl --failed` ve izleme sisteminin systemd kontrolu bunu gorur.
+#  Basarisizligin SESSIZ kalmamasi, bu birimin en onemli ozelligi.
+# ---------------------------------------------------------------------------
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=logsentry-archive
+
+# --- Guvenlik kisitlari (logsentry.service ile ayni gerekce) ---------------
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryDenyWriteExecute=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+ReadWritePaths=/opt/logsentry/logs /opt/logsentry/db /opt/logsentry/archive
+
+# Sikistirma ve VACUUM gecici olarak bellek/CPU ister; ana servisten
+# daha genis birakiyoruz ama sinirsiz degil.
+MemoryMax=512M
+CPUQuota=75%

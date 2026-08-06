@@ -74,6 +74,39 @@ services:
       start_period: 15s
       retries: 3
 
+  # --- Bakim: arsivleme + saklama suresi temizligi --------------------------
+  #  Yapilandirmadaki iki saklama suresini (storage.hot_retention_days ve
+  #  archive.retention_days) UYGULAYAN servis. Bu servis olmadan o degerler
+  #  yalnizca bir niyet beyani olarak kalir: kod var, cagiran yok.
+  #
+  #  Neden ayri bir konteyner? Cunku bu is periyodik ve KISA sureli; izleyici
+  #  servisin icine koymak, izlemeyi bakim isinin kaderine baglardi
+  #  (VACUUM veritabanini kilitler, sikistirma CPU yer).
+  #
+  #  Neden `sleep` donguSU, cron degil? Imajda cron yok ve konteynerde cron
+  #  calistirmak icin ayri bir supervisor gerekir. Bare-metal kurulumda
+  #  dogru arac systemd timer'dir: deploy/logsentry-archive.timer
+  #  (o, kacirilan calistirmayi da telafi eder -- bu dongu edemez).
+  #
+  #  ONCE calistirip SONRA uyuyor: konteyner her kalktiginda bakim bir kez
+  #  kosar. Tersi olsaydi, gunde bir yeniden baslatilan bir kurulumda
+  #  temizlik hicbir zaman calismazdi.
+  logsentry-maintenance:
+    build: .
+    command: >
+      sh -c 'while true; do
+               bin/logsentry-archive --all || echo "[bakim] cikis kodu $$? -- arsiv butunlugunu kontrol et";
+               sleep 86400;
+             done'
+    volumes:
+      - ./logs:/app/logs
+      - ./db:/app/db
+      - ./archive:/app/archive
+      - ./config:/app/config:ro
+    depends_on:
+      - logsentry
+    restart: unless-stopped
+
   # --- Sahte trafik (yalnizca gelistirme) -----------------------------------
   #  `profiles` sayesinde varsayilan `docker compose up` ile BASLAMAZ.
   #  Baslatmak icin:  docker compose --profile demo up

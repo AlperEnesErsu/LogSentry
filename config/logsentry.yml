@@ -276,6 +276,30 @@ storage:
 # --- Arsivleme: SOGUK katman (yasal saklama) -------------------------------
 # Ham log dosyalarinin dokunulmamis, sikistirilmis ve muhurlenmis kopyalari.
 #
+# ############################################################################
+#  SAKLAMA SURELERI KENDILIGINDEN ISLEMEZ -- ZAMANLAYICIYI KURMAN GEREKIR
+# ----------------------------------------------------------------------------
+#  Asagidaki retention_days ve yukaridaki storage.hot_retention_days
+#  degerlerini uygulayan sey bin/logsentry-archive'dir. Onu da periyodik
+#  olarak CALISTIRAN bir sey olmali:
+#
+#    systemd (bare-metal):
+#        sudo cp deploy/logsentry-archive.{service,timer} /etc/systemd/system/
+#        sudo systemctl daemon-reload
+#        sudo systemctl enable --now logsentry-archive.timer
+#        systemctl list-timers logsentry-archive     # dogrula
+#
+#    docker compose:
+#        `logsentry-maintenance` servisi bunu zaten yapiyor (gunde bir).
+#
+#  Bu adim atlanirsa: sicak katman sinirsiz buyur, arsiv hic temizlenmez ve
+#  buradaki sureler yalnizca bir NIYET BEYANI olur. KVKK tarafinda sorun,
+#  ayarin yazili OLMAMASI degil -- ISLEMEMESIDIR.
+#
+#  Calistigini dogrulamak icin (hicbir sey silmez):
+#      bin/logsentry-archive --dry-run --prune --prune-db
+# ############################################################################
+#
 # DIKKAT: retention_days iki yonlu bir kisittir --
 #   * cok KISA olursa 5651 kapsaminda yukumluluk ihlali olabilir
 #   * cok UZUN olursa IP adresi kisisel veri oldugu icin KVKK ihlali olabilir
