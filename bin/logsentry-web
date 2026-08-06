@@ -125,6 +125,16 @@ app.set :auth_pass, auth_enabled ? (ENV['LOGSENTRY_WEB_PASS'] || auth_cfg['admin
 app.set :auth_viewer_user, ENV['LOGSENTRY_WEB_VIEWER_USER'] || auth_cfg['viewer_user'] || 'viewer'
 app.set :auth_viewer_pass, auth_enabled ? (ENV['LOGSENTRY_WEB_VIEWER_PASS'] || auth_cfg['viewer_pass']) : nil
 
+# Kimlik dogrulamasindan muaf yollar (/health, /metrics, /webhooks/github).
+# Bunlar MAKINE uclari: healthcheck ve Prometheus Basic auth tasimaz.
+# Ayrintili gerekce: lib/log_sentry/web/app.rb -> DEFAULT_AUTH_EXEMPT_PATHS
+app.set :auth_exempt_paths,
+        (auth_cfg['exempt_paths'] || LogSentry::Web::App::DEFAULT_AUTH_EXEMPT_PATHS)
+
+# /metrics icin istege bagli tasiyici token. Sir oldugu icin YALNIZCA
+# ortam degiskeninden okunur -- yapilandirma dosyasi git'e girer.
+app.set :metrics_token, ENV['LOGSENTRY_METRICS_TOKEN']
+
 # Puma: thread'li bir sunucu. SSE icin SART -- her canli akis baglantisi bir
 # thread'i uzun sure mesgul tutar. Tek thread'li bir sunucuda (ornegin
 # WEBrick'in varsayilan kipi) ILK SSE baglantisi tum sunucuyu kilitler ve

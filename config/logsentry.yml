@@ -327,6 +327,26 @@ web:
     viewer_user: "viewer"
     viewer_pass: "viewer123"   # viewer sadece okuma (GET/HEAD) yapabilir
 
+    # --- Kimlik dogrulamasindan MUAF yollar ---------------------------------
+    #  Bu uclar INSAN icin degil MAKINE icin: Docker healthcheck'i ve
+    #  Prometheus kazicisi Basic auth kimligi TASIMAZ. Muafiyet olmadan
+    #  `enabled: true` yazmak konteyneri sonsuza kadar "unhealthy" gosterir
+    #  ve metrik toplamayi sessizce durdurur.
+    #
+    #  Sizinti riski kapatildi:
+    #    * /health kimliksiz istekte yalnizca {ok, version} doner
+    #    * /metrics, LOGSENTRY_METRICS_TOKEN tanimlanarak korunabilir
+    #      (tanimliysa ZORUNLU olur):
+    #          export LOGSENTRY_METRICS_TOKEN=$(openssl rand -hex 32)
+    #      Prometheus tarafinda: authorization: { credentials: <token> }
+    #
+    #  Listeyi daraltabilirsin ama /webhooks/github'i cikarma: GitHub Basic
+    #  auth gonderemez, kendi HMAC imzasiyla dogrulaniyor.
+    exempt_paths:
+      - /health
+      - /metrics
+      - /webhooks/github
+
 
 # --- GeoIP Ayarları --------------------------------------------------------
 geoip:

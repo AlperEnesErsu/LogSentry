@@ -53,6 +53,34 @@ module LogSentry
       set :rate_limit_window, 60
       set :page_size, 50
 
+      # ======================================================================
+      #  KIMLIK DOGRULAMASINDAN MUAF YOLLAR
+      # ----------------------------------------------------------------------
+      #  /health ve /metrics INSAN icin degil, MAKINE icin. Docker'in
+      #  healthcheck'i ve Prometheus'un kazicisi Basic auth kimligi tasimaz.
+      #
+      #  Bu muafiyet olmadan `web.auth.enabled: true` yazmak su iki seyi
+      #  SESSIZCE bozar:
+      #    * docker-compose healthcheck 401 alir -> konteyner sonsuza kadar
+      #      "unhealthy" gorunur, `depends_on: service_healthy` kilitlenir
+      #    * Prometheus 401 alir -> metrik toplama durur, kimse fark etmez
+      #
+      #  Bilgi sizintisi bu muafiyetin bedeli DEGIL:
+      #    * /health kimliksiz istekte yalnizca {ok, version} doner; sayaclar
+      #      (kac olay, kac alarm) yalnizca kimligini kanitlayana gosterilir
+      #    * /metrics, LOGSENTRY_METRICS_TOKEN ile ayrica korunabilir
+      #
+      #  /webhooks/github kendi HMAC imza dogrulamasina sahip; Basic auth
+      #  istemek GitHub'in webhook gondermesini imkansiz kilardi.
+      # ======================================================================
+      DEFAULT_AUTH_EXEMPT_PATHS = ['/health', '/metrics', '/webhooks/github'].freeze
+
+      # Salt okunurluktan muaf yollar: disaridan veri KABUL eden uclar.
+      WRITE_ALLOWED_PATHS = ['/webhooks/github'].freeze
+
+      set :auth_exempt_paths, DEFAULT_AUTH_EXEMPT_PATHS
+      set :metrics_token, ENV['LOGSENTRY_METRICS_TOKEN']
+
        HEARTBEAT_INTERVAL = 15
 
        RATE_LIMIT_STORE = {}
@@ -97,47 +125,85 @@ module LogSentry
           end
         end
 
-        if (settings.auth_enabled || (settings.auth_pass && !settings.auth_pass.to_s.empty?)) && request.path_info != '/webhooks/github'
-          auth = Rack::Auth::Basic::Request.new(request.env)
-          unless auth.provided? && auth.basic? && auth.credentials && auth.credentials.size == 2
-            headers['WWW-Authenticate'] = 'Basic realm="LogSentry Restricted Area"'
-            halt 401, { 'Content-Type' => 'text/plain' }, "401 -- Yetkisiz Erisim (Authentication Required)\n"
-          end
+        # Kimligi HER ZAMAN cozuyoruz -- muaf yollarda bile. Cunku muaf
+        # yollarin bazisi (bkz. /health) kimligini kanitlayana DAHA COK
+        # bilgi gosteriyor. Cozmek ile ZORUNLU KILMAK ayri kararlar.
+        env['logsentry.role'] = auth_configured? ? resolve_role : nil
 
-          username, password = auth.credentials
-          is_admin = Rack::Utils.secure_compare(username, settings.auth_user) &&
-                     Rack::Utils.secure_compare(password, settings.auth_pass.to_s)
-          
-          is_viewer = false
-          if settings.respond_to?(:auth_viewer_user) && settings.respond_to?(:auth_viewer_pass) && settings.auth_viewer_pass
-            is_viewer = Rack::Utils.secure_compare(username, settings.auth_viewer_user) &&
-                        Rack::Utils.secure_compare(password, settings.auth_viewer_pass.to_s)
-          end
-
-          if is_admin
-            role = :admin
-          elsif is_viewer
-            role = :viewer
-          else
-            headers['WWW-Authenticate'] = 'Basic realm="LogSentry Restricted Area"'
-            halt 401, { 'Content-Type' => 'text/plain' }, "401 -- Yetkisiz Erisim (Authentication Required)\n"
-          end
-
-          env['logsentry.role'] = role
+        if auth_configured? && !auth_exempt?
+          unauthorized! if env['logsentry.role'].nil?
 
           # RBAC yetki kontrolü: viewer sadece okuma (GET/HEAD) yapabilir
-          if role == :viewer && !%w[GET HEAD].include?(request.request_method)
+          if env['logsentry.role'] == :viewer && !%w[GET HEAD].include?(request.request_method)
             halt 403, { 'Content-Type' => 'text/plain' }, "403 -- Yetkiniz bu islem icin yetersizdir (Admin yetkisi gerekli)\n"
           end
         end
 
-        if settings.read_only && !%w[GET HEAD].include?(request.request_method) && request.path_info != '/webhooks/github'
+        if settings.read_only && !%w[GET HEAD].include?(request.request_method) &&
+           !WRITE_ALLOWED_PATHS.include?(request.path_info)
           halt 405, { 'Content-Type' => 'text/plain' },
                "405 -- bu arayuz salt okunurdur\n"
         end
       end
 
       helpers do
+        # ====================================================================
+        #  KIMLIK DOGRULAMA YARDIMCILARI
+        # --------------------------------------------------------------------
+        #  Uc ayri soru, uc ayri metod. Onceki surumde hepsi tek bir `before`
+        #  blogunun icinde ic ice gecmisti ve bu yuzden "kimligi coz" ile
+        #  "kimlik zorunlu" kararlari birbirinden ayrilamiyordu.
+        # ====================================================================
+
+        # Kimlik dogrulama yapilandirilmis mi?
+        # (auth_pass ortam degiskeninden gelmisse enabled bayragi olmadan da
+        #  devreye girer -- sirri tanimlamak, kullanmak istedigini gosterir.)
+        def auth_configured?
+          settings.auth_enabled || !settings.auth_pass.to_s.empty?
+        end
+
+        def auth_exempt?
+          settings.auth_exempt_paths.include?(request.path_info)
+        end
+
+        # Kimlik bilgisi gecerliyse rolunu doner; yoksa/gecersizse nil.
+        # HICBIR kosulda halt etmez -- karari cagiran verir.
+        #
+        # secure_compare: karsilastirmayi sabit surede yapar. Normal `==`
+        # ilk farkli baytta durur ve gecen sure, dogru bilinen on ek hakkinda
+        # bilgi sizdirir (zamanlama saldirisi).
+        def resolve_role
+          auth = Rack::Auth::Basic::Request.new(request.env)
+          return nil unless auth.provided? && auth.basic? && auth.credentials && auth.credentials.size == 2
+
+          username, password = auth.credentials
+
+          # BOS PAROLA HICBIR ZAMAN GECERLI DEGIL. Bu kontrol olmadan,
+          # auth_enabled: true ama parola tanimsizken "admin" adiyla ve bos
+          # parolayla giris yapilabilirdi -- yani auth'u ACMAK onu KAPATIRDI.
+          unless settings.auth_pass.to_s.empty?
+            if Rack::Utils.secure_compare(username, settings.auth_user.to_s) &&
+               Rack::Utils.secure_compare(password, settings.auth_pass.to_s)
+              return :admin
+            end
+          end
+
+          unless settings.auth_viewer_pass.to_s.empty?
+            if Rack::Utils.secure_compare(username, settings.auth_viewer_user.to_s) &&
+               Rack::Utils.secure_compare(password, settings.auth_viewer_pass.to_s)
+              return :viewer
+            end
+          end
+
+          nil
+        end
+
+        def unauthorized!
+          headers['WWW-Authenticate'] = 'Basic realm="LogSentry Restricted Area"'
+          halt 401, { 'Content-Type' => 'text/plain' },
+               "401 -- Yetkisiz Erisim (Authentication Required)\n"
+        end
+
         # ====================================================================
         #  h() -- XSS'e karsi tek savunma
         # --------------------------------------------------------------------
@@ -233,6 +299,19 @@ module LogSentry
       # ======================================================================
       get '/metrics' do
         content_type 'text/plain; version=0.0.4'
+
+        # Bu uc Basic auth'tan MUAF (Prometheus kimlik tasimaz). Yerine
+        # istege bagli bir tasiyici token: tanimliysa ZORUNLU, tanimli
+        # degilse uc acik kalir. Karari operatore birakiyoruz cunku
+        # /metrics'in ne kadar hassas oldugu kuruluma gore degisir --
+        # ama sessizce erisilemez hale getirmiyoruz.
+        unless settings.metrics_token.to_s.empty?
+          provided = request.env['HTTP_AUTHORIZATION'].to_s.sub(/\ABearer\s+/i, '')
+          unless Rack::Utils.secure_compare(provided, settings.metrics_token.to_s)
+            halt 401, "# LogSentry: gecersiz veya eksik metrics token\n"
+          end
+        end
+
         if store.nil?
           halt 503, "# HELP logsentry_up Service status\n# TYPE logsentry_up gauge\nlogsentry_up 0\n"
         end
@@ -640,11 +719,17 @@ module LogSentry
       # ======================================================================
       get '/health' do
         content_type :json
-        payload = {
-          ok:      true,
-          version: LogSentry::VERSION,
-          store:   store ? store.stats.slice(:events, :alerts, :size_bytes) : nil
-        }
+        payload = { ok: true, version: LogSentry::VERSION }
+
+        # Sayaclar bilgi sizdirir: "kac olay gordun, kac alarm urettin"
+        # saldirgan icin degerli bir sinyaldir (izleniyor muyum? ne kadar
+        # gurultu uretiyorum?). Healthcheck'in bu sayilara ihtiyaci YOK --
+        # ona `ok: true` yetiyor. O yuzden auth aciksa yalnizca kimligini
+        # kanitlayana gosteriyoruz.
+        if !auth_configured? || env['logsentry.role']
+          payload[:store] = store ? store.stats.slice(:events, :alerts, :size_bytes) : nil
+        end
+
         JSON.generate(payload)
       end
 
